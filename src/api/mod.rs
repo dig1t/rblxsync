@@ -74,5 +74,10 @@ impl RobloxClient {
 
         self.get(&path).await
     }
+
+    pub async fn ping(&self, universe_id: u64) -> Result<()> {
+        // Minimal request to verify connectivity and auth
+        self.list_datastores(universe_id, None, Some(1)).await.map(|_| ())
+    }
 }
 

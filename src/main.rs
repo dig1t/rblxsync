@@ -18,7 +18,8 @@ enum Commands {
         #[arg(long)]
         limit: Option<u32>,
     },
-    // Add more commands here
+    /// Simple connectivity check (requires ROBLOX_UNIVERSE_ID)
+    Ping,
 }
 
 #[tokio::main]
@@ -44,6 +45,25 @@ async fn main() -> anyhow::Result<()> {
                 }
             } else {
                 error!("ROBLOX_UNIVERSE_ID is required for this command");
+                std::process::exit(1);
+            }
+        }
+        Commands::Ping => {
+            if let Some(universe_id) = config.universe_id {
+                info!("Pinging Roblox API (Universe: {})...", universe_id);
+                let start = std::time::Instant::now();
+                match client.ping(universe_id).await {
+                    Ok(_) => {
+                        let duration = start.elapsed();
+                        info!("Pong! API is accessible. Latency: {:?}", duration);
+                    }
+                    Err(e) => {
+                        error!("Ping failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                error!("ROBLOX_UNIVERSE_ID is required for ping");
                 std::process::exit(1);
             }
         }
