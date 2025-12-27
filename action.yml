@@ -1,0 +1,35 @@
+name: 'Roblox API Sync'
+description: 'CLI tool to interact with Roblox Cloud API'
+inputs:
+  api_key:
+    description: 'Roblox Open Cloud API Key'
+    required: true
+  universe_id:
+    description: 'Target Universe ID'
+    required: false
+  command:
+    description: 'Subcommand to run (e.g., list-datastores)'
+    required: true
+    default: 'help'
+  args:
+    description: 'Additional arguments'
+    required: false
+    default: ''
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+    
+    - name: Build and Run
+      shell: bash
+      env:
+        ROBLOX_API_KEY: ${{ inputs.api_key }}
+        ROBLOX_UNIVERSE_ID: ${{ inputs.universe_id }}
+      run: |
+        cargo run --release -- ${{ inputs.command }} ${{ inputs.args }}
+
