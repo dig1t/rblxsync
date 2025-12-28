@@ -1,5 +1,5 @@
 use crate::api::RobloxClient;
-use crate::config::{RbxSyncConfig, GamePassConfig, DeveloperProductConfig, BadgeConfig};
+use crate::config::{RbxSyncConfig};
 use crate::state::{SyncState, ResourceState};
 use anyhow::{anyhow, Result};
 use log::{info, warn, error};
@@ -7,11 +7,11 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::collections::HashMap;
 
-pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClient) -> Result<()> {
-    info!("Starting sync...");
+pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClient, dry_run: bool) -> Result<()> {
+    info!("Starting sync... (dry_run: {})", dry_run);
 
     // 1. Universe Settings
-    if let Some(universe_id) = config.universe.name.as_ref().and(crate::config::Config::from_env().ok().and_then(|c| c.universe_id)) { 
+    if let Some(_universe_id) = config.universe.name.as_ref().and(crate::config::Config::from_env().ok().and_then(|c| c.universe_id)) { 
         // Logic to update universe settings if provided
         // NOTE: The config.universe struct has fields like name, description etc.
         // We need the universe ID from somewhere. 
@@ -35,18 +35,26 @@ pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClie
     if let Some(devices) = &config.universe.playable_devices { universe_patch.insert("playableDevices".to_string(), serde_json::json!(devices)); }
     
     if !universe_patch.is_empty() {
-        client.update_universe_settings(universe_id, &serde_json::Value::Object(universe_patch)).await?;
-        info!("Universe settings updated.");
+        if dry_run {
+            info!("Dry Run: Would update universe settings: {:?}", universe_patch);
+        } else {
+            client.update_universe_settings(universe_id, &serde_json::Value::Object(universe_patch)).await?;
+            info!("Universe settings updated.");
+        }
     }
 
     // 2. Sync Resources
-    sync_game_passes(universe_id, &config, &mut state, &client).await?;
-    sync_developer_products(universe_id, &config, &mut state, &client).await?;
-    sync_badges(universe_id, &config, &mut state, &client).await?;
+    sync_game_passes(universe_id, &config, &mut state, &client, dry_run).await?;
+    sync_developer_products(universe_id, &config, &mut state, &client, dry_run).await?;
+    sync_badges(universe_id, &config, &mut state, &client, dry_run).await?;
 
     // Save state
-    let root = std::env::current_dir()?;
-    state.save(&root)?;
+    if !dry_run {
+        let root = std::env::current_dir()?;
+        state.save(&root)?;
+    } else {
+        info!("Dry Run: Would save state.");
+    }
     info!("Sync complete!");
     Ok(())
 }
@@ -73,10 +81,26 @@ pub async fn publish(config: RbxSyncConfig, client: RobloxClient) -> Result<()> 
     Ok(())
 }
 
-async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient) -> Result<()> {
+async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Game Passes...");
     // Fetch existing to handle initial discovery
-    let existing = client.list_game_passes(universe_id, None).await?;
+    let existing = if !dry_run {
+         client.list_game_passes(universe_id, None).await?
+    } else {
+        // In dry-run, we might fail if we try to fetch from invalid universe.
+        // Try to fetch, but log error and return empty if fails? 
+        // Or just fail? 
+        // Better to fail if credentials are wrong, but for dry-run "what-if", maybe we want to continue?
+        // Let's stick to standard behavior: dry-run should verify access too.
+        match client.list_game_passes(universe_id, None).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Dry Run: Failed to list game passes (likely due to invalid credentials/universe): {}", e);
+                crate::api::ListResponse { data: vec![], next_page_cursor: None }
+            }
+        }
+    };
+
     let mut remote_map: HashMap<String, u64> = HashMap::new();
     for item in existing.data {
         if let (Some(name), Some(id)) = (item["name"].as_str(), item["id"].as_u64()) {
@@ -92,9 +116,16 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
         if let Some(icon_path_str) = &pass.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
             let state_entry = state.game_passes.get(&pass.name);
-            let (aid, hash) = ensure_icon(client, &icon_path, state_entry).await?;
-            asset_id = Some(aid);
-            icon_hash = Some(hash);
+            if dry_run {
+                info!("Dry Run: Would process icon from: {:?}", icon_path);
+                // Simulate success
+                asset_id = Some(0); 
+                icon_hash = Some("dry_run_hash".to_string());
+            } else {
+                let (aid, hash) = ensure_icon(client, &icon_path, state_entry).await?;
+                asset_id = Some(aid);
+                icon_hash = Some(hash);
+            }
         }
 
         // Determine ID (State -> Remote -> Create)
@@ -104,45 +135,62 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
             *rid
         } else {
             // Create
-            info!("Creating Game Pass: {}", pass.name);
-            let mut body = serde_json::json!({
-                "name": pass.name,
-                "description": pass.description.clone().unwrap_or_default(),
-                "price": pass.price_in_robux.unwrap_or(0), 
-            });
-            if let Some(aid) = asset_id {
-                body["iconAssetId"] = aid.into();
+            if dry_run {
+                info!("Dry Run: Would create Game Pass: {}", pass.name);
+                0 // Dummy ID
+            } else {
+                info!("Creating Game Pass: {}", pass.name);
+                let mut body = serde_json::json!({
+                    "name": pass.name,
+                    "description": pass.description.clone().unwrap_or_default(),
+                    "price": pass.price_in_robux.unwrap_or(0), 
+                });
+                if let Some(aid) = asset_id {
+                    body["iconAssetId"] = aid.into();
+                }
+                
+                let resp = client.create_game_pass(universe_id, &body).await?;
+                resp["id"].as_u64().ok_or(anyhow!("Created game pass has no ID"))?
             }
-            
-            let resp = client.create_game_pass(universe_id, &body).await?;
-            resp["id"].as_u64().ok_or(anyhow!("Created game pass has no ID"))?
         };
 
         // Update State
-        state.update_game_pass(pass.name.clone(), id, icon_hash.clone(), asset_id);
+        if !dry_run {
+            state.update_game_pass(pass.name.clone(), id, icon_hash.clone(), asset_id);
+        }
 
         // Update Remote (Idempotent PATCH)
-        info!("Updating Game Pass: {}", pass.name);
-        let mut patch = serde_json::Map::new();
-        patch.insert("name".to_string(), pass.name.clone().into());
-        if let Some(d) = &pass.description { patch.insert("description".to_string(), d.clone().into()); }
-        if let Some(p) = pass.price_in_robux { patch.insert("price".to_string(), p.into()); }
-        if let Some(aid) = asset_id { patch.insert("iconAssetId".to_string(), aid.into()); }
-        // Game Pass specific: isForSale ?? The user schema has `is_for_sale`.
-        // Check API: `price` usually implies for sale if > 0? 
-        // Or there might be specific field.
-        // User query: "isForSale/on-sale"
-        // Let's assume standard field name.
-        
-        client.update_game_pass(id, &serde_json::Value::Object(patch)).await?;
+        if dry_run {
+            info!("Dry Run: Would update Game Pass: {}", pass.name);
+        } else {
+            info!("Updating Game Pass: {}", pass.name);
+            let mut patch = serde_json::Map::new();
+            patch.insert("name".to_string(), pass.name.clone().into());
+            if let Some(d) = &pass.description { patch.insert("description".to_string(), d.clone().into()); }
+            if let Some(p) = pass.price_in_robux { patch.insert("price".to_string(), p.into()); }
+            if let Some(aid) = asset_id { patch.insert("iconAssetId".to_string(), aid.into()); }
+            
+            client.update_game_pass(id, &serde_json::Value::Object(patch)).await?;
+        }
     }
     Ok(())
 }
 
-async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient) -> Result<()> {
+async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Developer Products...");
     // Similar logic...
-    let existing = client.list_developer_products(universe_id, None).await?;
+    let existing = if !dry_run {
+        client.list_developer_products(universe_id, None).await?
+    } else {
+        match client.list_developer_products(universe_id, None).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Dry Run: Failed to list developer products: {}", e);
+                crate::api::ListResponse { data: vec![], next_page_cursor: None }
+            }
+        }
+    };
+
     let mut remote_map: HashMap<String, u64> = HashMap::new();
     for item in existing.data {
         if let (Some(name), Some(id)) = (item["name"].as_str(), item["id"].as_u64()) {
@@ -157,9 +205,15 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
         if let Some(icon_path_str) = &prod.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
             let state_entry = state.developer_products.get(&prod.name);
-            let (aid, hash) = ensure_icon(client, &icon_path, state_entry).await?;
-            asset_id = Some(aid);
-            icon_hash = Some(hash);
+            if dry_run {
+                info!("Dry Run: Would process icon from: {:?}", icon_path);
+                asset_id = Some(0);
+                icon_hash = Some("dry_run_hash".to_string());
+            } else {
+                let (aid, hash) = ensure_icon(client, &icon_path, state_entry).await?;
+                asset_id = Some(aid);
+                icon_hash = Some(hash);
+            }
         }
 
         let id = if let Some(sid) = state.developer_products.get(&prod.name).map(|r| r.id) {
@@ -167,34 +221,56 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
         } else if let Some(rid) = remote_map.get(&prod.name) {
             *rid
         } else {
-             info!("Creating Developer Product: {}", prod.name);
-             let mut body = serde_json::json!({
-                 "name": prod.name,
-                 "price": prod.price_in_robux,
-                 "description": prod.description.clone().unwrap_or_default(),
-             });
-             if let Some(aid) = asset_id { body["iconAssetId"] = aid.into(); }
-             let resp = client.create_developer_product(universe_id, &body).await?;
-             resp["id"].as_u64().ok_or(anyhow!("Created product has no ID"))?
+             if dry_run {
+                 info!("Dry Run: Would create Developer Product: {}", prod.name);
+                 0
+             } else {
+                 info!("Creating Developer Product: {}", prod.name);
+                 let mut body = serde_json::json!({
+                     "name": prod.name,
+                     "price": prod.price_in_robux,
+                     "description": prod.description.clone().unwrap_or_default(),
+                 });
+                 if let Some(aid) = asset_id { body["iconAssetId"] = aid.into(); }
+                 let resp = client.create_developer_product(universe_id, &body).await?;
+                 resp["id"].as_u64().ok_or(anyhow!("Created product has no ID"))?
+             }
         };
 
-        state.update_developer_product(prod.name.clone(), id, icon_hash, asset_id);
+        if !dry_run {
+            state.update_developer_product(prod.name.clone(), id, icon_hash, asset_id);
+        }
 
-        info!("Updating Developer Product: {}", prod.name);
-        let mut patch = serde_json::Map::new();
-        patch.insert("name".to_string(), prod.name.clone().into());
-        patch.insert("price".to_string(), prod.price_in_robux.into());
-        if let Some(d) = &prod.description { patch.insert("description".to_string(), d.clone().into()); }
-        if let Some(aid) = asset_id { patch.insert("iconAssetId".to_string(), aid.into()); }
-        
-        client.update_developer_product(id, &serde_json::Value::Object(patch)).await?;
+        if dry_run {
+            info!("Dry Run: Would update Developer Product: {}", prod.name);
+        } else {
+            info!("Updating Developer Product: {}", prod.name);
+            let mut patch = serde_json::Map::new();
+            patch.insert("name".to_string(), prod.name.clone().into());
+            patch.insert("price".to_string(), prod.price_in_robux.into());
+            if let Some(d) = &prod.description { patch.insert("description".to_string(), d.clone().into()); }
+            if let Some(aid) = asset_id { patch.insert("iconAssetId".to_string(), aid.into()); }
+            
+            client.update_developer_product(id, &serde_json::Value::Object(patch)).await?;
+        }
     }
     Ok(())
 }
 
-async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient) -> Result<()> {
+async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Badges...");
-     let existing = client.list_badges(universe_id, None).await?;
+     let existing = if !dry_run {
+         client.list_badges(universe_id, None).await?
+     } else {
+        match client.list_badges(universe_id, None).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Dry Run: Failed to list badges: {}", e);
+                crate::api::ListResponse { data: vec![], next_page_cursor: None }
+            }
+        }
+     };
+
     let mut remote_map: HashMap<String, u64> = HashMap::new();
     for item in existing.data {
         if let (Some(name), Some(id)) = (item["name"].as_str(), item["id"].as_u64()) {
@@ -209,9 +285,15 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
         if let Some(icon_path_str) = &badge.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
             let state_entry = state.badges.get(&badge.name);
-            let (aid, hash) = ensure_icon(client, &icon_path, state_entry).await?;
-            asset_id = Some(aid);
-            icon_hash = Some(hash);
+            if dry_run {
+                info!("Dry Run: Would process icon from: {:?}", icon_path);
+                asset_id = Some(0);
+                icon_hash = Some("dry_run_hash".to_string());
+            } else {
+                let (aid, hash) = ensure_icon(client, &icon_path, state_entry).await?;
+                asset_id = Some(aid);
+                icon_hash = Some(hash);
+            }
         }
 
         let id = if let Some(sid) = state.badges.get(&badge.name).map(|r| r.id) {
@@ -219,26 +301,37 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
         } else if let Some(rid) = remote_map.get(&badge.name) {
             *rid
         } else {
-             info!("Creating Badge: {}", badge.name);
-             let mut body = serde_json::json!({
-                 "name": badge.name,
-                 "description": badge.description.clone().unwrap_or_default(),
-             });
-             if let Some(aid) = asset_id { body["iconImageId"] = aid.into(); } // Note: Badges might use iconImageId
-             let resp = client.create_badge(universe_id, &body).await?;
-             resp["id"].as_u64().ok_or(anyhow!("Created badge has no ID"))?
+             if dry_run {
+                 info!("Dry Run: Would create Badge: {}", badge.name);
+                 0
+             } else {
+                 info!("Creating Badge: {}", badge.name);
+                 let mut body = serde_json::json!({
+                     "name": badge.name,
+                     "description": badge.description.clone().unwrap_or_default(),
+                 });
+                 if let Some(aid) = asset_id { body["iconImageId"] = aid.into(); } // Note: Badges might use iconImageId
+                 let resp = client.create_badge(universe_id, &body).await?;
+                 resp["id"].as_u64().ok_or(anyhow!("Created badge has no ID"))?
+             }
         };
 
-        state.update_badge(badge.name.clone(), id, icon_hash, asset_id);
+        if !dry_run {
+            state.update_badge(badge.name.clone(), id, icon_hash, asset_id);
+        }
 
-        info!("Updating Badge: {}", badge.name);
-        let mut patch = serde_json::Map::new();
-        patch.insert("name".to_string(), badge.name.clone().into());
-        if let Some(d) = &badge.description { patch.insert("description".to_string(), d.clone().into()); }
-        if let Some(aid) = asset_id { patch.insert("iconImageId".to_string(), aid.into()); }
-        if let Some(e) = badge.is_enabled { patch.insert("enabled".to_string(), e.into()); }
-        
-        client.update_badge(id, &serde_json::Value::Object(patch)).await?;
+        if dry_run {
+             info!("Dry Run: Would update Badge: {}", badge.name);
+        } else {
+            info!("Updating Badge: {}", badge.name);
+            let mut patch = serde_json::Map::new();
+            patch.insert("name".to_string(), badge.name.clone().into());
+            if let Some(d) = &badge.description { patch.insert("description".to_string(), d.clone().into()); }
+            if let Some(aid) = asset_id { patch.insert("iconImageId".to_string(), aid.into()); }
+            if let Some(e) = badge.is_enabled { patch.insert("enabled".to_string(), e.into()); }
+            
+            client.update_badge(id, &serde_json::Value::Object(patch)).await?;
+        }
     }
     Ok(())
 }

@@ -87,14 +87,14 @@ async fn main() -> anyhow::Result<()> {
     match command {
         Commands::Run { dry_run } => {
             if dry_run {
-                info!("Dry-run mode not fully implemented yet. Performing validation...");
+                info!("Dry-run mode enabled.");
             }
             let config_path = Path::new(&args.config);
             let config = RbxSyncConfig::load(config_path)?;
             let root = config_path.parent().unwrap_or(Path::new("."));
             let state = SyncState::load(root)?;
             
-            commands::run(config, state, client).await?;
+            commands::run(config, state, client, dry_run).await?;
         }
         Commands::Publish => {
             let config = RbxSyncConfig::load(Path::new(&args.config))?;
