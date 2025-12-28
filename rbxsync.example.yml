@@ -31,4 +31,3 @@ places:
   - place_id: 1234567890
     file_path: "places/start_place.rbxl"
     publish: true
-
