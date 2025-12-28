@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
-use reqwest::{Client, Method, RequestBuilder, StatusCode};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use reqwest::{Client, Method, RequestBuilder};
+use serde::{de::DeserializeOwned, Deserialize};
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -198,7 +198,7 @@ impl RobloxClient {
             .ok_or_else(|| anyhow!("No operation path returned"))?;
 
         // 2. Poll Operation
-        let op_url = format!("{}{}", BASE_URL, op_path); // path usually includes /operations/...
+        let _op_url = format!("{}{}", BASE_URL, op_path); // path usually includes /operations/...
         
         // If path is relative like "operations/...", prepend BASE_URL/assets/v1/ ?
         // Usually the path returned is "operations/..." relative to service root.
@@ -242,7 +242,7 @@ impl RobloxClient {
         let url = format!("{}/universes/v1/universes/{}/places/{}/versions", BASE_URL, universe_id, place_id);
         
         let file_content = tokio::fs::read(file_path).await?;
-        let version_type = "Published"; // or Saved
+        let _version_type = "Published"; // or Saved
 
         // According to Place Publishing API docs:
         // Query param: versionType=Published
@@ -296,6 +296,11 @@ impl RobloxClient {
 
 #[derive(Debug, Deserialize)]
 pub struct ListResponse<T> {
+    #[serde(alias = "gamePasses")]
+    #[serde(alias = "developerProducts")]
+    #[serde(alias = "badges")]
     pub data: Vec<T>,
-    pub nextPageCursor: Option<String>,
+    #[serde(alias = "nextPageCursor")]
+    #[serde(alias = "nextPageToken")]
+    pub next_page_cursor: Option<String>,
 }
