@@ -11,3 +11,4 @@ target/
 
 # User-specific environment variables
 .env
+rbxsync.yml
