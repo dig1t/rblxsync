@@ -1,72 +1,109 @@
 use clap::{Parser, Subcommand};
-use rbxsync::config::Config;
+use rbxsync::config::{Config, RbxSyncConfig};
 use rbxsync::api::RobloxClient;
+use rbxsync::state::SyncState;
+use rbxsync::commands;
 use log::{info, error};
+use std::path::Path;
 
 #[derive(Parser)]
 #[command(name = "rbxsync")]
-#[command(about = "CLI for interacting with Roblox Cloud API", long_about = None)]
+#[command(about = "Manage Roblox experience metadata via Open Cloud", long_about = None)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
+
+    /// Path to config file
+    #[arg(short, long, default_value = "rbxsync.yml")]
+    config: String,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Test connection by listing datastores (requires ROBLOX_UNIVERSE_ID)
-    ListDatastores {
+    /// Sync universe settings and assets (default)
+    Run {
+        /// Preview changes without applying them
         #[arg(long)]
-        limit: Option<u32>,
+        dry_run: bool,
     },
-    /// Simple connectivity check (requires ROBLOX_UNIVERSE_ID)
-    Ping,
+    /// Publish place files
+    Publish,
+    /// Validate configuration file
+    Validate,
+    /// Export existing resources to Luau/Lua
+    Export {
+        /// Output file path
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Export as Lua instead of Luau
+        #[arg(long)]
+        lua: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Cli::parse();
-    let config = Config::from_env()?;
-    let client = RobloxClient::new(&config);
+    
+    // Check for "Validate" command early to avoid needing API key if possible, 
+    // but for now we'll load env for all.
+    let env_config = Config::from_env(); 
 
-    match args.command {
-        Commands::ListDatastores { limit } => {
-            if let Some(universe_id) = config.universe_id {
-                info!("Fetching datastores for universe: {}", universe_id);
-                match client.list_datastores(universe_id, None, limit).await {
-                    Ok(data) => {
-                        println!("{}", serde_json::to_string_pretty(&data)?);
-                    }
-                    Err(e) => {
-                        error!("Failed to list datastores: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                error!("ROBLOX_UNIVERSE_ID is required for this command");
+    let command = args.command.unwrap_or(Commands::Run { dry_run: false });
+
+    match command {
+        Commands::Validate => {
+            let path = Path::new(&args.config);
+            if !path.exists() {
+                error!("Config file not found: {}", args.config);
                 std::process::exit(1);
             }
-        }
-        Commands::Ping => {
-            if let Some(universe_id) = config.universe_id {
-                info!("Pinging Roblox API (Universe: {})...", universe_id);
-                let start = std::time::Instant::now();
-                match client.ping(universe_id).await {
-                    Ok(_) => {
-                        let duration = start.elapsed();
-                        info!("Pong! API is accessible. Latency: {:?}", duration);
-                    }
-                    Err(e) => {
-                        error!("Ping failed: {}", e);
-                        std::process::exit(1);
-                    }
+            match RbxSyncConfig::load(path) {
+                Ok(_) => info!("Config file is valid."),
+                Err(e) => {
+                    error!("Config validation failed: {}", e);
+                    std::process::exit(1);
                 }
-            } else {
-                error!("ROBLOX_UNIVERSE_ID is required for ping");
-                std::process::exit(1);
             }
+            return Ok(());
         }
+        _ => {}
+    }
+
+    // Load Env Config (API Key)
+    let env_config = match env_config {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to load environment: {}", e);
+            error!("Ensure ROBLOX_API_KEY is set.");
+            std::process::exit(1);
+        }
+    };
+
+    let client = RobloxClient::new(env_config.api_key);
+
+    match command {
+        Commands::Run { dry_run } => {
+            if dry_run {
+                info!("Dry-run mode not fully implemented yet. Performing validation...");
+            }
+            let config_path = Path::new(&args.config);
+            let config = RbxSyncConfig::load(config_path)?;
+            let root = config_path.parent().unwrap_or(Path::new("."));
+            let state = SyncState::load(root)?;
+            
+            commands::run(config, state, client).await?;
+        }
+        Commands::Publish => {
+            let config = RbxSyncConfig::load(Path::new(&args.config))?;
+            commands::publish(config, client).await?;
+        }
+        Commands::Export { output, lua } => {
+            commands::export(client, output, lua).await?;
+        }
+        Commands::Validate => unreachable!(), // Handled above
     }
 
     Ok(())

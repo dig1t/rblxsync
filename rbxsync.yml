@@ -1,0 +1,34 @@
+assets_dir: assets/icons/
+
+universe:
+  name: "My Awesome Game"
+  description: "Updated via rbxsync!"
+  genre: "Adventure"
+  playable_devices: ["Computer", "Phone", "Tablet"]
+  max_players: 50
+
+game_passes:
+  - name: "VIP Pass"
+    description: "Exclusive access and perks"
+    price_in_robux: 100
+    icon: "vip.png"
+    is_for_sale: true
+
+developer_products:
+  - name: "Speed Boost"
+    description: "Double speed for 5 minutes"
+    price_in_robux: 50
+    icon: "boost.png"
+    is_active: true
+
+badges:
+  - name: "First Win"
+    description: "Awarded for your first victory!"
+    icon: "first_win.png"
+    is_enabled: true
+
+places:
+  - place_id: 1234567890
+    file_path: "places/start_place.rbxl"
+    publish: true
+

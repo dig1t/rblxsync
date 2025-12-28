@@ -1,61 +1,82 @@
 # rbxsync
 
-A Rust-based CLI and GitHub Action for interacting with the Roblox Cloud API.
+`rbxsync` is a Rust-based CLI tool and GitHub Action for declaratively managing Roblox experience metadata via the Open Cloud API. It allows you to define your Universe settings, Game Passes, Developer Products, Badges, and Places in a YAML configuration file and sync them to Roblox with a single command.
 
 ## Features
 
-- Built with Rust for performance and safety.
-- Uses `clap` for command-line argument parsing.
-- Uses `reqwest` for HTTP requests.
-- Async runtime with `tokio`.
-- Configurable via environment variables or `.env` file.
+- **Declarative Configuration**: Manage all your game metadata in `rbxsync.yml`.
+- **Idempotent Sync**: Only updates resources that have changed. Matches by name.
+- **Icon Management**: Automatically uploads icons for Game Passes, Products, and Badges if the local file changes (checksum verification).
+- **Place Publishing**: Publish `.rbxl` files to specific Place IDs.
+- **Export**: Generate a Luau/Lua config file from existing Roblox resources.
+- **CI/CD Ready**: Built for GitHub Actions and automated workflows.
 
-## Setup
+## Installation
 
-1. **Install Rust**: Ensure you have Rust installed via [rustup](https://rustup.rs/).
-2. **Environment Variables**:
-   Create a `.env` file in the root directory:
-   ```env
-   ROBLOX_API_KEY=your_api_key_here
-   ROBLOX_UNIVERSE_ID=your_universe_id_here
+### From Source
+```bash
+cargo install --path .
+```
+
+## Configuration
+
+1. Create a `rbxsync.yml` file in your project root:
+   ```yaml
+   assets_dir: assets/icons/
+   universe:
+     name: "My Awesome Game"
+     description: "Managed by rbxsync"
+     genre: "Adventure"
+     playable_devices: ["Computer", "Phone"]
+     max_players: 20
+   
+   game_passes:
+     - name: "VIP"
+       price_in_robux: 100
+       icon: "vip.png"
    ```
+
+2. Set your Environment Variables:
+   - `ROBLOX_API_KEY`: An Open Cloud API Key with permissions for Universe, Game Passes, Badges, and Assets.
+   - `ROBLOX_UNIVERSE_ID`: The ID of the Universe to sync to.
 
 ## Usage
 
-### CLI
-
-Run the tool using `cargo`:
-
+### Sync (Default)
+Syncs universe settings and all assets (game passes, products, badges).
 ```bash
-# List datastores
-cargo run -- list-datastores
-
-# List datastores with limit
-cargo run -- list-datastores --limit 10
+rbxsync
+# OR
+rbxsync run
 ```
 
-### GitHub Action
-
-You can use this repository as a GitHub Action in your workflows.
-
-```yaml
-steps:
-  - uses: actions/checkout@v4
-  
-  - uses: ./ # Or your-username/rbxsync@main
-    with:
-      api_key: ${{ secrets.ROBLOX_API_KEY }}
-      universe_id: '123456789'
-      command: 'list-datastores'
-      args: '--limit 5'
+### Publish Places
+Publishes `.rbxl` files defined in the `places` section of your config.
+```bash
+rbxsync publish
 ```
 
-## Development
+### Export
+Fetch existing resources and generate a config file (useful for migration).
+```bash
+rbxsync export --output config.luau
+```
 
-- `cargo build`: Build the project.
-- `cargo test`: Run tests.
-- `cargo fmt`: Format code.
-- `cargo clippy`: Lint code.
+### Validate
+Check if your `rbxsync.yml` is valid.
+```bash
+rbxsync validate
+```
+
+## API Key Scopes
+
+Ensure your API Key has the following permissions:
+- **Universe**: Read/Write
+- **Game Passes**: Read/Write
+- **Developer Products**: Read/Write (if using products)
+- **Badges**: Read/Write (if using badges)
+- **Assets**: Write (for uploading icons)
+- **Places**: Write (for publishing)
 
 ## License
 
