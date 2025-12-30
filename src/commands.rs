@@ -102,8 +102,16 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
     };
 
     let mut remote_map: HashMap<String, u64> = HashMap::new();
-    for item in existing.data {
-        if let (Some(name), Some(id)) = (item["name"].as_str(), item["id"].as_u64()) {
+    for item in &existing.data {
+        log::debug!("Game pass item from API: {}", item);
+        // Try both "id" and "gamePassId" fields, and handle string or number
+        let id = item["id"].as_u64()
+            .or_else(|| item["gamePassId"].as_u64())
+            .or_else(|| item["id"].as_str().and_then(|s| s.parse().ok()))
+            .or_else(|| item["gamePassId"].as_str().and_then(|s| s.parse().ok()));
+        
+        if let (Some(name), Some(id)) = (item["name"].as_str(), id) {
+            log::debug!("Found game pass: {} with ID: {}", name, id);
             remote_map.insert(name.to_string(), id);
         }
     }
@@ -122,7 +130,8 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
                 asset_id = Some(0); 
                 icon_hash = Some("dry_run_hash".to_string());
             } else {
-                let (aid, hash) = ensure_icon(client, &icon_path, state_entry).await?;
+                let creator = config.creator.as_ref().ok_or_else(|| anyhow!("Creator configuration is required for asset uploads"))?;
+                let (aid, hash) = ensure_icon(client, &icon_path, state_entry, creator).await?;
                 asset_id = Some(aid);
                 icon_hash = Some(hash);
             }
@@ -168,9 +177,10 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
             patch.insert("name".to_string(), pass.name.clone().into());
             if let Some(d) = &pass.description { patch.insert("description".to_string(), d.clone().into()); }
             if let Some(p) = pass.price_in_robux { patch.insert("price".to_string(), p.into()); }
-            if let Some(aid) = asset_id { patch.insert("iconAssetId".to_string(), aid.into()); }
+            // Note: file requires binary upload, handled separately if needed
+            let _ = asset_id; // Silence unused warning for now
             
-            client.update_game_pass(id, &serde_json::Value::Object(patch)).await?;
+            client.update_game_pass(universe_id, id, &serde_json::Value::Object(patch)).await?;
         }
     }
     Ok(())
@@ -182,18 +192,23 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
     let existing = if !dry_run {
         client.list_developer_products(universe_id, None).await?
     } else {
-        match client.list_developer_products(universe_id, None).await {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("Dry Run: Failed to list developer products: {}", e);
-                crate::api::ListResponse { data: vec![], next_page_cursor: None }
-            }
-        }
+        // In dry-run mode, assume no existing products to simulate creation scenario
+        info!("Dry Run: Simulating empty developer products list");
+        crate::api::ListResponse { data: vec![], next_page_cursor: None }
     };
 
     let mut remote_map: HashMap<String, u64> = HashMap::new();
-    for item in existing.data {
-        if let (Some(name), Some(id)) = (item["name"].as_str(), item["id"].as_u64()) {
+    for item in &existing.data {
+        log::debug!("Developer product item from API: {}", item);
+        // Try multiple possible ID field names
+        let id = item["id"].as_u64()
+            .or_else(|| item["productId"].as_u64())
+            .or_else(|| item["developerProductId"].as_u64())
+            .or_else(|| item["id"].as_str().and_then(|s| s.parse().ok()))
+            .or_else(|| item["productId"].as_str().and_then(|s| s.parse().ok()));
+        
+        if let (Some(name), Some(id)) = (item["name"].as_str(), id) {
+            log::debug!("Found developer product: {} with ID: {}", name, id);
             remote_map.insert(name.to_string(), id);
         }
     }
@@ -210,7 +225,8 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
                 asset_id = Some(0);
                 icon_hash = Some("dry_run_hash".to_string());
             } else {
-                let (aid, hash) = ensure_icon(client, &icon_path, state_entry).await?;
+                let creator = config.creator.as_ref().ok_or_else(|| anyhow!("Creator configuration is required for asset uploads"))?;
+                let (aid, hash) = ensure_icon(client, &icon_path, state_entry, creator).await?;
                 asset_id = Some(aid);
                 icon_hash = Some(hash);
             }
@@ -249,9 +265,10 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
             patch.insert("name".to_string(), prod.name.clone().into());
             patch.insert("price".to_string(), prod.price_in_robux.into());
             if let Some(d) = &prod.description { patch.insert("description".to_string(), d.clone().into()); }
-            if let Some(aid) = asset_id { patch.insert("iconAssetId".to_string(), aid.into()); }
+            // Note: imageFile requires binary upload, handled separately if needed
+            let _ = asset_id; // Silence unused warning for now
             
-            client.update_developer_product(id, &serde_json::Value::Object(patch)).await?;
+            client.update_developer_product(universe_id, id, &serde_json::Value::Object(patch)).await?;
         }
     }
     Ok(())
@@ -262,13 +279,9 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
      let existing = if !dry_run {
          client.list_badges(universe_id, None).await?
      } else {
-        match client.list_badges(universe_id, None).await {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("Dry Run: Failed to list badges: {}", e);
-                crate::api::ListResponse { data: vec![], next_page_cursor: None }
-            }
-        }
+        // In dry-run mode, assume no existing badges to simulate creation scenario
+        info!("Dry Run: Simulating empty badges list");
+        crate::api::ListResponse { data: vec![], next_page_cursor: None }
      };
 
     let mut remote_map: HashMap<String, u64> = HashMap::new();
@@ -279,22 +292,26 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
     }
 
     for badge in &config.badges {
-        let mut asset_id = None;
-        let mut icon_hash = None;
-
-        if let Some(icon_path_str) = &badge.icon {
+        // Prepare icon data if provided
+        let icon_data = if let Some(icon_path_str) = &badge.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
-            let state_entry = state.badges.get(&badge.name);
-            if dry_run {
-                info!("Dry Run: Would process icon from: {:?}", icon_path);
-                asset_id = Some(0);
-                icon_hash = Some("dry_run_hash".to_string());
+            if icon_path.exists() {
+                let data = tokio::fs::read(&icon_path).await?;
+                let filename = icon_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                
+                // Calculate hash for change detection
+                let mut hasher = Sha256::new();
+                hasher.update(&data);
+                let hash = format!("{:x}", hasher.finalize());
+                
+                Some((data, filename, hash))
             } else {
-                let (aid, hash) = ensure_icon(client, &icon_path, state_entry).await?;
-                asset_id = Some(aid);
-                icon_hash = Some(hash);
+                warn!("Badge icon not found: {:?}", icon_path);
+                None
             }
-        }
+        } else {
+            None
+        };
 
         let id = if let Some(sid) = state.badges.get(&badge.name).map(|r| r.id) {
             sid
@@ -306,18 +323,44 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
                  0
              } else {
                  info!("Creating Badge: {}", badge.name);
-                 let mut body = serde_json::json!({
-                     "name": badge.name,
-                     "description": badge.description.clone().unwrap_or_default(),
-                 });
-                 if let Some(aid) = asset_id { body["iconImageId"] = aid.into(); } // Note: Badges might use iconImageId
-                 let resp = client.create_badge(universe_id, &body).await?;
+                 let image_for_create = icon_data.as_ref().map(|(data, filename, _)| (data.clone(), filename.clone()));
+                 
+                 let result = client.create_badge(
+                     universe_id,
+                     &badge.name,
+                     badge.description.as_deref().unwrap_or(""),
+                     image_for_create,
+                     config.badge_payment_source.as_deref()
+                 ).await;
+                 
+                 // Handle payment source errors with helpful message
+                 let resp = match result {
+                     Ok(r) => r,
+                     Err(e) => {
+                         let err_str = e.to_string();
+                         if err_str.contains("Payment source is invalid") || err_str.contains("code\":16") {
+                             error!("Badge creation failed: Payment source is required.");
+                             error!("");
+                             error!("Creating badges costs 100 Robux. Please add the following to your rbxsync.yml:");
+                             error!("");
+                             error!("  badge_payment_source: \"user\"   # Pay from your user account");
+                             error!("  # OR");
+                             error!("  badge_payment_source: \"group\"  # Pay from group funds");
+                             error!("");
+                             return Err(anyhow!("Badge creation requires badge_payment_source configuration"));
+                         }
+                         return Err(e);
+                     }
+                 };
+                 
                  resp["id"].as_u64().ok_or(anyhow!("Created badge has no ID"))?
              }
         };
 
+        // Update state with icon hash
+        let icon_hash = icon_data.as_ref().map(|(_, _, hash)| hash.clone());
         if !dry_run {
-            state.update_badge(badge.name.clone(), id, icon_hash, asset_id);
+            state.update_badge(badge.name.clone(), id, icon_hash.clone(), None);
         }
 
         if dry_run {
@@ -327,16 +370,28 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
             let mut patch = serde_json::Map::new();
             patch.insert("name".to_string(), badge.name.clone().into());
             if let Some(d) = &badge.description { patch.insert("description".to_string(), d.clone().into()); }
-            if let Some(aid) = asset_id { patch.insert("iconImageId".to_string(), aid.into()); }
             if let Some(e) = badge.is_enabled { patch.insert("enabled".to_string(), e.into()); }
             
             client.update_badge(id, &serde_json::Value::Object(patch)).await?;
+            
+            // Update icon if changed (check against stored hash)
+            if let Some((data, filename, new_hash)) = &icon_data {
+                let should_update = state.badges.get(&badge.name)
+                    .and_then(|s| s.icon_hash.as_ref())
+                    .map(|old_hash| old_hash != new_hash)
+                    .unwrap_or(true);
+                
+                if should_update {
+                    info!("Updating badge icon for: {}", badge.name);
+                    client.update_badge_icon(id, data.clone(), filename).await?;
+                }
+            }
         }
     }
     Ok(())
 }
 
-async fn ensure_icon(client: &RobloxClient, path: &Path, state: Option<&ResourceState>) -> Result<(u64, String)> {
+async fn ensure_icon(client: &RobloxClient, path: &Path, state: Option<&ResourceState>, creator: &crate::config::CreatorConfig) -> Result<(u64, String)> {
     if !path.exists() {
         return Err(anyhow!("Icon file not found: {:?}", path));
     }
@@ -359,7 +414,7 @@ async fn ensure_icon(client: &RobloxClient, path: &Path, state: Option<&Resource
     // Upload
     info!("Uploading icon: {:?}", path);
     let name = path.file_stem().unwrap_or_default().to_string_lossy();
-    let asset_id_str = client.upload_asset(path, &name).await?;
+    let asset_id_str = client.upload_asset(path, &name, creator).await?;
     let asset_id = asset_id_str.parse::<u64>()?;
     
     Ok((asset_id, hash))

@@ -1,12 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::{Client, Method, RequestBuilder};
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::path::Path;
-use std::time::Duration;
-use tokio::time::sleep;
 
 const BASE_URL: &str = "https://apis.roblox.com";
-const BADGES_URL: &str = "https://badges.roblox.com";
 
 #[derive(Clone)]
 pub struct RobloxClient {
@@ -30,27 +27,30 @@ impl RobloxClient {
 
     async fn execute<T: DeserializeOwned>(&self, builder: RequestBuilder) -> Result<T> {
         let response = builder.send().await?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
         
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
+        log::debug!("API response status: {}, body: {}", status, text);
+        
+        if !status.is_success() {
             return Err(anyhow!("API request failed: {} - {}", status, text));
         }
 
-        // Handle empty response for 200 OK if T is ()
-        // But serde_json might fail on empty string.
-        // For now, assume JSON. 
-        // If we expect empty body (e.g. 200 OK from PATCH), we might need special handling.
-        // But most Open Cloud APIs return the object.
+        let text = text;
         
-        let text = response.text().await?;
-        if text.is_empty() {
-             // Hack: try to deserialize from "null" if the type allows it, or fail.
-             // Better: check if T is Unit.
-             // For now, we will rely on serde_json parsing.
-             if std::any::type_name::<T>() == "()" {
-                 return Ok(serde_json::from_str("null").unwrap());
-             }
+        // Handle empty response (common for PATCH/PUT endpoints)
+        if text.is_empty() || text.trim().is_empty() {
+            // Try to deserialize from empty JSON object or null
+            if let Ok(val) = serde_json::from_str::<T>("{}") {
+                return Ok(val);
+            }
+            if let Ok(val) = serde_json::from_str::<T>("null") {
+                return Ok(val);
+            }
+            // If both fail, return an empty JSON value if T is serde_json::Value
+            if std::any::type_name::<T>() == "serde_json::value::Value" {
+                return serde_json::from_str("{}").context("Failed to create empty response");
+            }
         }
         
         serde_json::from_str(&text).context(format!("Failed to parse response: {}", text))
@@ -59,7 +59,9 @@ impl RobloxClient {
     // --- Universe Settings ---
 
     pub async fn update_universe_settings(&self, universe_id: u64, settings: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/universes/v1/universes/{}/configuration", BASE_URL, universe_id);
+        let url = format!("{}/cloud/v2/universes/{}", BASE_URL, universe_id);
+        log::debug!("Making PATCH request to: {}", url);
+        log::debug!("Request body: {}", settings);
         self.execute(self.request(Method::PATCH, &url).json(settings)).await
     }
 
@@ -76,33 +78,45 @@ impl RobloxClient {
 
     pub async fn create_game_pass(&self, universe_id: u64, data: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}/game-passes/v1/universes/{}/game-passes", BASE_URL, universe_id);
-        self.execute(self.request(Method::POST, &url).json(data)).await
+        let form = json_to_multipart(data);
+        log::debug!("Creating game pass at: {}", url);
+        let result: serde_json::Value = self.execute(self.request(Method::POST, &url).multipart(form)).await?;
+        log::info!("Create game pass response: {}", result);
+        Ok(result)
     }
 
-    pub async fn update_game_pass(&self, game_pass_id: u64, data: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/game-passes/v1/game-passes/{}", BASE_URL, game_pass_id);
-        self.execute(self.request(Method::PATCH, &url).json(data)).await
+    pub async fn update_game_pass(&self, universe_id: u64, game_pass_id: u64, data: &serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}/game-passes/v1/universes/{}/game-passes/{}", BASE_URL, universe_id, game_pass_id);
+        log::debug!("Updating game pass at URL: {} with data: {}", url, data);
+        let form = json_to_multipart(data);
+        self.execute(self.request(Method::PATCH, &url).multipart(form)).await
     }
 
     // --- Developer Products ---
 
-    pub async fn list_developer_products(&self, universe_id: u64, cursor: Option<String>) -> Result<ListResponse<serde_json::Value>> {
-        let url = format!("{}/developer-products/v1/universes/{}/developer-products", BASE_URL, universe_id);
-        let mut req = self.request(Method::GET, &url).query(&[("limit", "100")]);
-        if let Some(c) = cursor {
-            req = req.query(&[("cursor", &c)]);
+    pub async fn list_developer_products(&self, universe_id: u64, page_token: Option<String>) -> Result<ListResponse<serde_json::Value>> {
+        let url = format!("{}/developer-products/v2/universes/{}/developer-products/creator", BASE_URL, universe_id);
+        let mut req = self.request(Method::GET, &url).query(&[("pageSize", "50")]);
+        if let Some(token) = page_token {
+            req = req.query(&[("pageToken", &token)]);
         }
         self.execute(req).await
     }
 
     pub async fn create_developer_product(&self, universe_id: u64, data: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/developer-products/v1/universes/{}/developer-products", BASE_URL, universe_id);
-        self.execute(self.request(Method::POST, &url).json(data)).await
+        let url = format!("{}/developer-products/v2/universes/{}/developer-products", BASE_URL, universe_id);
+        log::debug!("Creating developer product at: {}", url);
+        let form = json_to_multipart(data);
+        let result: serde_json::Value = self.execute(self.request(Method::POST, &url).multipart(form)).await?;
+        log::info!("Create developer product response: {}", result);
+        Ok(result)
     }
 
-    pub async fn update_developer_product(&self, product_id: u64, data: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/developer-products/v1/developer-products/{}", BASE_URL, product_id);
-        self.execute(self.request(Method::PATCH, &url).json(data)).await
+    pub async fn update_developer_product(&self, universe_id: u64, product_id: u64, data: &serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}/developer-products/v2/universes/{}/developer-products/{}", BASE_URL, universe_id, product_id);
+        log::debug!("Updating developer product at URL: {} with data: {}", url, data);
+        let form = json_to_multipart(data);
+        self.execute(self.request(Method::PATCH, &url).multipart(form)).await
     }
 
     // --- Badges ---
@@ -116,7 +130,8 @@ impl RobloxClient {
     // I will use the URL provided by the user.
 
     pub async fn list_badges(&self, universe_id: u64, cursor: Option<String>) -> Result<ListResponse<serde_json::Value>> {
-        let url = format!("{}/v1/universes/{}/badges", BADGES_URL, universe_id);
+        // List badges uses badges.roblox.com, not apis.roblox.com
+        let url = format!("https://badges.roblox.com/v1/universes/{}/badges", universe_id);
         let mut req = self.request(Method::GET, &url).query(&[("limit", "100")]);
         if let Some(c) = cursor {
             req = req.query(&[("cursor", &c)]);
@@ -124,19 +139,67 @@ impl RobloxClient {
         self.execute(req).await
     }
 
-    pub async fn create_badge(&self, universe_id: u64, data: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/universes/{}/badges", BADGES_URL, universe_id);
-        self.execute(self.request(Method::POST, &url).json(data)).await
+    pub async fn create_badge(
+        &self, 
+        universe_id: u64, 
+        name: &str, 
+        description: &str, 
+        image_data: Option<(Vec<u8>, String)>,
+        payment_source_type: Option<&str>
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/legacy-badges/v1/universes/{}/badges", BASE_URL, universe_id);
+        log::debug!("Creating badge at: {}", url);
+        
+        let mut form = reqwest::multipart::Form::new()
+            .text("name", name.to_string())
+            .text("description", description.to_string());
+        
+        // Add payment source type if provided (1 = User, 2 = Group)
+        if let Some(source_type) = payment_source_type {
+            let type_id = match source_type.to_lowercase().as_str() {
+                "user" => "1",
+                "group" => "2",
+                _ => "1", // Default to user
+            };
+            form = form.text("paymentSourceType", type_id.to_string());
+        }
+        
+        // Add image file if provided
+        if let Some((data, filename)) = image_data {
+            let file_part = reqwest::multipart::Part::bytes(data)
+                .file_name(filename)
+                .mime_str("image/png")?;
+            form = form.part("request.files", file_part);
+        }
+        
+        self.execute(self.request(Method::POST, &url).multipart(form)).await
     }
 
     pub async fn update_badge(&self, badge_id: u64, data: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/badges/{}", BADGES_URL, badge_id);
+        // Update badge config
+        let url = format!("{}/legacy-badges/v1/badges/{}", BASE_URL, badge_id);
+        log::debug!("Updating badge at URL: {} with data: {}", url, data);
         self.execute(self.request(Method::PATCH, &url).json(data)).await
+    }
+
+    pub async fn update_badge_icon(&self, badge_id: u64, image_data: Vec<u8>, filename: &str) -> Result<serde_json::Value> {
+        // Update badge icon uses legacy-publish endpoint
+        let url = format!("{}/legacy-publish/v1/badges/{}/icon", BASE_URL, badge_id);
+        log::debug!("Updating badge icon at URL: {}", url);
+        
+        let file_part = reqwest::multipart::Part::bytes(image_data)
+            .file_name(filename.to_string())
+            .mime_str("image/png")?;
+        
+        let form = reqwest::multipart::Form::new()
+            .part("request.files", file_part);
+        
+        self.execute(self.request(Method::POST, &url).multipart(form)).await
     }
 
     // --- Assets (Images) ---
 
-    pub async fn upload_asset(&self, file_path: &Path, name: &str) -> Result<String> {
+    pub async fn upload_asset(&self, file_path: &Path, name: &str, creator: &crate::config::CreatorConfig) -> Result<String> {
         // 1. Prepare Multipart
         let url = format!("{}/assets/v1/assets", BASE_URL);
         
@@ -153,135 +216,166 @@ impl RobloxClient {
         let file_content = tokio::fs::read(file_path).await?;
         let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-        let request_json = serde_json::json!({
-            "assetType": "Image",
-            "displayName": name,
-            "description": format!("Uploaded by rbxsync from {}", filename),
-            "creationContext": {
-                "creator": {
-                    "userId": "1" // This is often ignored or inferred from API key context (Group/User)
-                    // Actually, for Open Cloud, we might need expectedCreatorId if implicit doesn't work.
-                    // But standard Assets API usage often infers from key.
-                    // User query doesn't specify Creator ID config.
-                    // Let's omit creationContext or provide minimal.
-                    // Documentation says: creationContext is optional if inferable.
-                }
-            }
-        });
-        
-        // Remove creationContext if it causes issues or isn't configured.
-        // For MVP, let's try sending without it first, or minimal.
-        let request_part = reqwest::multipart::Part::text(request_json.to_string())
-            .mime_str("application/json")?;
-        
-        let file_part = reqwest::multipart::Part::bytes(file_content)
-            .file_name(filename)
-            .mime_str(content_type)?;
+        // Create the request struct following Asphalt's approach
+        let creator_web = if creator.creator_type == "group" {
+            WebAssetCreator::Group(WebAssetGroupCreator {
+                group_id: creator.id.clone(),
+            })
+        } else {
+            WebAssetCreator::User(WebAssetUserCreator {
+                user_id: creator.id.clone(),
+            })
+        };
+
+        let request = WebAssetRequest {
+            asset_type: "Image".to_string(),
+            display_name: name.to_string(),
+            description: format!("Uploaded by rbxsync from {}", filename),
+            creation_context: WebAssetRequestCreationContext {
+                creator: creator_web,
+                expected_price: None, // Not used for image assets
+            },
+        };
+
+        let request_json = serde_json::to_string(&request)?;
+
+        // Try Part::bytes instead of stream_with_length
+        // Use stream_with_length like Asphalt does
+        let len = file_content.len() as u64;
+        let file_part = reqwest::multipart::Part::stream_with_length(
+            reqwest::Body::from(file_content),
+            len,
+        )
+        .file_name(filename.clone())
+        .mime_str(content_type)?;
 
         let form = reqwest::multipart::Form::new()
-            .part("request", request_part)
+            .text("request", request_json.clone())
             .part("fileContent", file_part);
 
-        let response = self.request(Method::POST, &url)
+        log::debug!("Asset upload URL: {}", url);
+        log::debug!("Asset upload request JSON: {}", request_json);
+
+        let response = self.client
+            .request(Method::POST, &url)
+            .header("x-api-key", &self.api_key)
             .multipart(form)
             .send()
             .await?;
         
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Asset upload failed: {} - {}", status, text));
-        }
+        let status = response.status();
+        let text = response.text().await?;
 
-        let op_data: serde_json::Value = response.json().await?;
-        let op_path = op_data["path"].as_str()
-            .ok_or_else(|| anyhow!("No operation path returned"))?;
-
-        // 2. Poll Operation
-        let _op_url = format!("{}{}", BASE_URL, op_path); // path usually includes /operations/...
-        
-        // If path is relative like "operations/...", prepend BASE_URL/assets/v1/ ?
-        // Usually the path returned is "operations/..." relative to service root.
-        // Or it's a full resource name.
-        // According to docs, it's usually relative to the API version root or full path.
-        // Let's try appending to BASE_URL/assets/v1/ if it doesn't start with http.
-        // Actually, let's look at the docs pattern. 
-        // "path": "operations/..."
-        // Request URL: https://apis.roblox.com/assets/v1/{path}
-        
-        let poll_url = format!("{}/assets/v1/{}", BASE_URL, op_path);
-
-        loop {
-            let op_resp = self.request(Method::GET, &poll_url).send().await?;
-            if !op_resp.status().is_success() {
-                 return Err(anyhow!("Polling failed: {}", op_resp.status()));
+        if status.is_success() {
+            // Parse operation response
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct OperationResponse {
+                path: Option<String>,
+                done: Option<bool>,
+                response: Option<OperationResult>,
             }
-            let op_status: serde_json::Value = op_resp.json().await?;
-            
-            if op_status["done"].as_bool().unwrap_or(false) {
-                if let Some(response) = op_status.get("response") {
-                     if let Some(asset_id) = response.get("assetId") {
-                         // assetId can be string or number.
-                         if let Some(s) = asset_id.as_str() {
-                             return Ok(s.to_string());
-                         } else if let Some(n) = asset_id.as_u64() {
-                             return Ok(n.to_string());
-                         }
-                     }
+
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct OperationResult {
+                asset_id: Option<String>,
+            }
+
+            let operation: OperationResponse = serde_json::from_str(&text)
+                .context("Failed to parse operation response")?;
+
+            log::debug!("Initial operation response: {}", text);
+
+            // If the operation is already done, extract the asset ID
+            if operation.done.unwrap_or(false) {
+                if let Some(resp) = operation.response {
+                    if let Some(asset_id) = resp.asset_id {
+                        return Ok(asset_id);
+                    }
                 }
-                return Err(anyhow!("Operation done but no assetId found"));
             }
-            
-            sleep(Duration::from_secs(1)).await;
+
+            // Extract operation path for polling
+            let operation_path = operation.path
+                .ok_or_else(|| anyhow!("Operation response missing 'path' field"))?;
+
+            // Poll the operation until it completes
+            self.poll_operation(&operation_path).await
+        } else {
+            Err(anyhow!("Asset upload failed: {} - {}", status, text))
         }
+    }
+
+    /// Polls an asset operation until it completes and returns the asset ID
+    async fn poll_operation(&self, operation_path: &str) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct OperationResponse {
+            done: Option<bool>,
+            response: Option<OperationResult>,
+            error: Option<OperationError>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct OperationResult {
+            asset_id: Option<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct OperationError {
+            message: Option<String>,
+        }
+
+        let url = format!("{}/assets/v1/{}", BASE_URL, operation_path);
+        let max_attempts = 30;
+        let poll_interval = std::time::Duration::from_secs(2);
+
+        for attempt in 1..=max_attempts {
+            log::debug!("Polling operation (attempt {}): {}", attempt, url);
+
+            let response = self.request(Method::GET, &url).send().await?;
+            let status = response.status();
+            let text = response.text().await?;
+
+            if !status.is_success() {
+                return Err(anyhow!("Failed to poll operation: {} - {}", status, text));
+            }
+
+            log::debug!("Poll response: {}", text);
+
+            let operation: OperationResponse = serde_json::from_str(&text)
+                .context("Failed to parse operation poll response")?;
+
+            if let Some(error) = operation.error {
+                let msg = error.message.unwrap_or_else(|| "Unknown error".to_string());
+                return Err(anyhow!("Asset operation failed: {}", msg));
+            }
+
+            if operation.done.unwrap_or(false) {
+                if let Some(resp) = operation.response {
+                    if let Some(asset_id) = resp.asset_id {
+                        log::info!("Asset uploaded successfully with ID: {}", asset_id);
+                        return Ok(asset_id);
+                    }
+                }
+                return Err(anyhow!("Operation completed but no asset ID found"));
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+
+        Err(anyhow!("Operation polling timed out after {} attempts", max_attempts))
     }
 
     // --- Places ---
 
     pub async fn publish_place(&self, universe_id: u64, place_id: u64, file_path: &Path) -> Result<serde_json::Value> {
-        let url = format!("{}/universes/v1/universes/{}/places/{}/versions", BASE_URL, universe_id, place_id);
+        let url = format!("{}/v1/universes/{}/places/{}/versions", BASE_URL, universe_id, place_id);
         
         let file_content = tokio::fs::read(file_path).await?;
         let _version_type = "Published"; // or Saved
-
-        // According to Place Publishing API docs:
-        // Query param: versionType=Published
-        // Body: Binary content (application/xml or application/octet-stream) OR Multipart?
-        // User query says: "multipart .rbxl"
-        // Checking docs: https://create.roblox.com/docs/open-cloud/place-publishing-api
-        // "The request body must be the binary content of the place file."
-        // Content-Type: application/octet-stream
-        // Query params: versionType (Saved or Published)
-        
-        // WAIT. The user prompt says "multipart .rbxl". 
-        // But the official docs for `POST .../versions` often expect raw body.
-        // However, if the user specifically requested multipart, I should check if that's supported.
-        // But usually raw body is standard for place publishing.
-        // Let me check "multipart" in user query context.
-        // "Place publish: POST ... (multipart .rbxl)"
-        // I will follow the user's explicit instruction to use Multipart if they insist, 
-        // BUT standard Open Cloud Place Publish is often raw body.
-        // Re-reading user references: "Place Publishing API"
-        // Let's assume the user knows what they want or I should double check. 
-        // If I use multipart where raw is expected, it will fail.
-        // A common confusion is with Assets API (which IS multipart).
-        // I'll try raw body first as it's the documented standard for `versions` endpoint, 
-        // unless I find evidence of multipart support.
-        // BUT, I must follow constraints. "multipart .rbxl". 
-        // If I strictly follow "multipart", I might break it if the API doesn't support it.
-        // However, some newer APIs use multipart.
-        // Let's check `reqwest` usage.
-        
-        // I will use `application/octet-stream` with the file body, as that is the standard working implementation.
-        // Using multipart for place publishing is likely a misunderstanding in the prompt unless it's a VERY new API change (Dec 2025?).
-        // The prompt says "New Monetization APIs (Dec 2025)". Place publishing is older.
-        // I'll stick to the likely working implementation (Raw Body) but comment why.
-        // Wait, if I deviate, I should verify.
-        // I'll try to support what's requested, but `reqwest` makes raw body easy.
-        
-        // Actually, let's look at `apis.roblox.com/universes/v1/universes/{universeId}/places/{placeId}/versions`.
-        // Docs: "Request Body: The binary content of the place file."
-        // So I will use raw body.
         
         self.client.post(&url)
             .header("x-api-key", &self.api_key)
@@ -294,6 +388,43 @@ impl RobloxClient {
     }
 }
 
+/// Converts a JSON object to a HashMap suitable for form encoding
+fn json_to_form(json: &serde_json::Value) -> std::collections::HashMap<String, String> {
+    let mut form = std::collections::HashMap::new();
+    if let Some(obj) = json.as_object() {
+        for (key, value) in obj {
+            let str_value = match value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Null => String::new(),
+                // For arrays/objects, serialize to JSON string
+                _ => value.to_string(),
+            };
+            form.insert(key.clone(), str_value);
+        }
+    }
+    form
+}
+
+/// Converts a JSON object to multipart form data
+fn json_to_multipart(json: &serde_json::Value) -> reqwest::multipart::Form {
+    let mut form = reqwest::multipart::Form::new();
+    if let Some(obj) = json.as_object() {
+        for (key, value) in obj {
+            let str_value = match value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Null => String::new(),
+                _ => value.to_string(),
+            };
+            form = form.text(key.clone(), str_value);
+        }
+    }
+    form
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ListResponse<T> {
     #[serde(alias = "gamePasses")]
@@ -303,4 +434,40 @@ pub struct ListResponse<T> {
     #[serde(alias = "nextPageCursor")]
     #[serde(alias = "nextPageToken")]
     pub next_page_cursor: Option<String>,
+}
+
+// Asset upload structs following Asphalt's implementation
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebAssetRequest {
+    asset_type: String,
+    display_name: String,
+    description: String,
+    creation_context: WebAssetRequestCreationContext,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebAssetRequestCreationContext {
+    creator: WebAssetCreator,
+    expected_price: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WebAssetCreator {
+    User(WebAssetUserCreator),
+    Group(WebAssetGroupCreator),
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebAssetUserCreator {
+    user_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebAssetGroupCreator {
+    group_id: String,
 }
