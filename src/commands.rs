@@ -136,14 +136,29 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
     }
 
     for pass in &config.game_passes {
-        // Case-insensitive state lookup
-        let state_entry = state.game_passes.iter()
-            .find(|(k, _)| k.to_lowercase() == pass.name.to_lowercase())
-            .map(|(_, v)| v);
+        // Case-insensitive state lookup by name
+        let state_lookup = state.find_game_pass_by_name(&pass.name);
+        let state_entry = state_lookup.map(|(_, s)| s);
         let mut asset_id = None;
         let mut icon_hash = None;
         let mut icon_changed = false;
         let mut changes: Vec<&str> = Vec::new();
+
+        // Check for metadata changes (name, description, price, is_for_sale)
+        if let Some(entry) = state_entry {
+            if entry.name != pass.name {
+                changes.push("name");
+            }
+            if entry.description.as_ref() != pass.description.as_ref() {
+                changes.push("description");
+            }
+            if entry.price != pass.price_in_robux.map(|p| p as u64) {
+                changes.push("price");
+            }
+            if entry.is_for_sale != pass.is_for_sale {
+                changes.push("is_for_sale");
+            }
+        }
 
         // Handle Icon - calculate hash and check for changes
         if let Some(icon_path_str) = &pass.icon {
@@ -171,11 +186,10 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
         }
 
         // Determine ID (State -> Remote -> Create) - case-insensitive matching
-        let state_id = state.game_passes.iter()
-            .find(|(k, _)| k.to_lowercase() == pass.name.to_lowercase())
-            .map(|(_, v)| v.id);
+        let state_id = state_lookup.map(|(id, _)| id);
         let remote_entry = remote_map.get(&pass.name.to_lowercase());
         let is_new = state_id.is_none() && remote_entry.is_none();
+        let has_changes = !changes.is_empty();
         
         let id = if let Some(sid) = state_id {
             sid
@@ -208,16 +222,11 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
             }
         };
 
-        // Update State
-        if !dry_run {
-            state.update_game_pass(pass.name.clone(), id, icon_hash.clone(), asset_id);
-        }
-
-        // Update Remote (Idempotent PATCH) - only if newly created or icon changed
+        // Update Remote (Idempotent PATCH) - only if newly created or has changes
         if is_new {
             // Already created above
         } else if dry_run {
-            if icon_changed {
+            if has_changes {
                 info!("  [UPDATE] Game Pass '{}' (ID: {}) - would update: {}", 
                     pass.name, id, changes.join(", "));
                 updated_count += 1;
@@ -225,21 +234,26 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
                 info!("  [SKIP] Game Pass '{}' (ID: {}) - no changes detected", pass.name, id);
                 skipped_count += 1;
             }
-        } else if icon_changed {
+        } else if has_changes {
             let mut patch = serde_json::Map::new();
             patch.insert("name".to_string(), pass.name.clone().into());
             if let Some(d) = &pass.description { patch.insert("description".to_string(), d.clone().into()); }
             if let Some(p) = pass.price_in_robux { patch.insert("price".to_string(), p.into()); }
+            if let Some(s) = pass.is_for_sale { patch.insert("isForSale".to_string(), s.into()); }
             
-            // Read image file if icon is specified
-            let image_data = if let Some(icon_path_str) = &pass.icon {
-                let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
-                if icon_path.exists() {
-                    let data = tokio::fs::read(&icon_path).await?;
-                    let filename = icon_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    Some((data, filename))
+            // Read image file if icon changed
+            let image_data = if icon_changed {
+                if let Some(icon_path_str) = &pass.icon {
+                    let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
+                    if icon_path.exists() {
+                        let data = tokio::fs::read(&icon_path).await?;
+                        let filename = icon_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        Some((data, filename))
+                    } else {
+                        warn!("Game pass icon not found: {:?}", icon_path);
+                        None
+                    }
                 } else {
-                    warn!("Game pass icon not found: {:?}", icon_path);
                     None
                 }
             } else {
@@ -253,6 +267,19 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
         } else {
             info!("  [SKIP] Game Pass '{}' (ID: {}) - no changes detected", pass.name, id);
             skipped_count += 1;
+        }
+
+        // Update State after successful sync
+        if !dry_run && id != 0 {
+            state.update_game_pass(
+                id,
+                pass.name.clone(), 
+                pass.description.clone(),
+                pass.price_in_robux.map(|p| p as u64),
+                pass.is_for_sale,
+                icon_hash.clone(), 
+                asset_id
+            );
         }
     }
     
@@ -296,14 +323,26 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
     }
 
     for prod in &config.developer_products {
-        // Case-insensitive state lookup
-        let state_entry = state.developer_products.iter()
-            .find(|(k, _)| k.to_lowercase() == prod.name.to_lowercase())
-            .map(|(_, v)| v);
+        // Case-insensitive state lookup by name
+        let state_lookup = state.find_developer_product_by_name(&prod.name);
+        let state_entry = state_lookup.map(|(_, s)| s);
         let mut asset_id = None;
         let mut icon_hash = None;
         let mut icon_changed = false;
         let mut changes: Vec<&str> = Vec::new();
+
+        // Check for metadata changes (name, description, price)
+        if let Some(entry) = state_entry {
+            if entry.name != prod.name {
+                changes.push("name");
+            }
+            if entry.description.as_ref() != prod.description.as_ref() {
+                changes.push("description");
+            }
+            if entry.price != Some(prod.price_in_robux as u64) {
+                changes.push("price");
+            }
+        }
 
         if let Some(icon_path_str) = &prod.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
@@ -330,11 +369,10 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
         }
 
         // Case-insensitive matching for ID lookup
-        let state_id = state.developer_products.iter()
-            .find(|(k, _)| k.to_lowercase() == prod.name.to_lowercase())
-            .map(|(_, v)| v.id);
+        let state_id = state_lookup.map(|(id, _)| id);
         let remote_entry = remote_map.get(&prod.name.to_lowercase());
         let is_new = state_id.is_none() && remote_entry.is_none();
+        let has_changes = !changes.is_empty();
 
         let id = if let Some(sid) = state_id {
             sid
@@ -364,15 +402,11 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
             }
         };
 
-        if !dry_run {
-            state.update_developer_product(prod.name.clone(), id, icon_hash, asset_id);
-        }
-
-        // Update Remote (Idempotent PATCH) - only if newly created or icon changed
+        // Update Remote (Idempotent PATCH) - only if has changes
         if is_new {
             // Already created above
         } else if dry_run {
-            if icon_changed {
+            if has_changes {
                 info!("  [UPDATE] Developer Product '{}' (ID: {}) - would update: {}", 
                     prod.name, id, changes.join(", "));
                 updated_count += 1;
@@ -380,21 +414,25 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
                 info!("  [SKIP] Developer Product '{}' (ID: {}) - no changes detected", prod.name, id);
                 skipped_count += 1;
             }
-        } else if icon_changed {
+        } else if has_changes {
             let mut patch = serde_json::Map::new();
             patch.insert("name".to_string(), prod.name.clone().into());
             patch.insert("price".to_string(), prod.price_in_robux.into());
             if let Some(d) = &prod.description { patch.insert("description".to_string(), d.clone().into()); }
             
-            // Read image file if icon is specified
-            let image_data = if let Some(icon_path_str) = &prod.icon {
-                let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
-                if icon_path.exists() {
-                    let data = tokio::fs::read(&icon_path).await?;
-                    let filename = icon_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    Some((data, filename))
+            // Read image file if icon changed
+            let image_data = if icon_changed {
+                if let Some(icon_path_str) = &prod.icon {
+                    let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
+                    if icon_path.exists() {
+                        let data = tokio::fs::read(&icon_path).await?;
+                        let filename = icon_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        Some((data, filename))
+                    } else {
+                        warn!("Developer product icon not found: {:?}", icon_path);
+                        None
+                    }
                 } else {
-                    warn!("Developer product icon not found: {:?}", icon_path);
                     None
                 }
             } else {
@@ -408,6 +446,18 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
         } else {
             info!("  [SKIP] Developer Product '{}' (ID: {}) - no changes detected", prod.name, id);
             skipped_count += 1;
+        }
+
+        // Update State after successful sync
+        if !dry_run && id != 0 {
+            state.update_developer_product(
+                id,
+                prod.name.clone(), 
+                prod.description.clone(),
+                Some(prod.price_in_robux as u64),
+                icon_hash, 
+                asset_id
+            );
         }
     }
     
@@ -443,11 +493,23 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
     }
 
     for badge in &config.badges {
-        // Case-insensitive state lookup
-        let state_entry = state.badges.iter()
-            .find(|(k, _)| k.to_lowercase() == badge.name.to_lowercase())
-            .map(|(_, v)| v);
+        // Case-insensitive state lookup by name
+        let state_lookup = state.find_badge_by_name(&badge.name);
+        let state_entry = state_lookup.map(|(_, s)| s);
         let mut changes: Vec<&str> = Vec::new();
+
+        // Check for metadata changes (name, description, is_enabled)
+        if let Some(entry) = state_entry {
+            if entry.name != badge.name {
+                changes.push("name");
+            }
+            if entry.description.as_ref() != badge.description.as_ref() {
+                changes.push("description");
+            }
+            if entry.is_enabled != badge.is_enabled {
+                changes.push("is_enabled");
+            }
+        }
         
         // Prepare icon data if provided
         let icon_data = if let Some(icon_path_str) = &badge.icon {
@@ -483,11 +545,10 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
         };
 
         // Case-insensitive matching for ID lookup
-        let state_id = state.badges.iter()
-            .find(|(k, _)| k.to_lowercase() == badge.name.to_lowercase())
-            .map(|(_, v)| v.id);
+        let state_id = state_lookup.map(|(id, _)| id);
         let remote_entry = remote_map.get(&badge.name.to_lowercase());
         let is_new = state_id.is_none() && remote_entry.is_none();
+        let has_changes = !changes.is_empty();
 
         let id = if let Some(sid) = state_id {
             sid
@@ -541,15 +602,12 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
 
         // Update state with icon hash
         let icon_hash = icon_data.as_ref().map(|(_, _, hash)| hash.clone());
-        if !dry_run {
-            state.update_badge(badge.name.clone(), id, icon_hash.clone(), None);
-        }
 
-        // Update Remote (Idempotent PATCH) - only if newly created or icon changed
+        // Update Remote (Idempotent PATCH) - only if has changes
         if is_new {
             // Already created above
         } else if dry_run {
-            if icon_changed {
+            if has_changes {
                 info!("  [UPDATE] Badge '{}' (ID: {}) - would update: {}", 
                     badge.name, id, changes.join(", "));
                 updated_count += 1;
@@ -557,7 +615,7 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
                 info!("  [SKIP] Badge '{}' (ID: {}) - no changes detected", badge.name, id);
                 skipped_count += 1;
             }
-        } else if icon_changed {
+        } else if has_changes {
             let mut patch = serde_json::Map::new();
             patch.insert("name".to_string(), badge.name.clone().into());
             if let Some(d) = &badge.description { patch.insert("description".to_string(), d.clone().into()); }
@@ -565,9 +623,11 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
             
             client.update_badge(id, &serde_json::Value::Object(patch)).await?;
             
-            // Update icon since it changed
-            if let Some((data, filename, _)) = &icon_data {
-                client.update_badge_icon(id, data.clone(), filename).await?;
+            // Update icon if it changed
+            if icon_changed {
+                if let Some((data, filename, _)) = &icon_data {
+                    client.update_badge_icon(id, data.clone(), filename).await?;
+                }
             }
             info!("  [UPDATED] Badge '{}' (ID: {}) - updated: {}", 
                 badge.name, id, changes.join(", "));
@@ -575,6 +635,18 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
         } else {
             info!("  [SKIP] Badge '{}' (ID: {}) - no changes detected", badge.name, id);
             skipped_count += 1;
+        }
+
+        // Update State after successful sync
+        if !dry_run && id != 0 {
+            state.update_badge(
+                id,
+                badge.name.clone(), 
+                badge.description.clone(),
+                badge.is_enabled,
+                icon_hash.clone(), 
+                None
+            );
         }
     }
     
