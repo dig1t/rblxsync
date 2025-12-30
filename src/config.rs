@@ -36,6 +36,7 @@ impl Config {
 pub struct RbxSyncConfig {
     #[serde(default = "default_assets_dir")]
     pub assets_dir: String,
+    pub creator: Option<CreatorConfig>,
     pub universe: UniverseConfig,
     #[serde(default)]
     pub game_passes: Vec<GamePassConfig>,
@@ -45,10 +46,20 @@ pub struct RbxSyncConfig {
     pub badges: Vec<BadgeConfig>,
     #[serde(default)]
     pub places: Vec<PlaceConfig>,
+    /// Payment source type for badge creation (costs 100 Robux per badge)
+    /// Valid values: "user" (pay from user funds) or "group" (pay from group funds)
+    pub badge_payment_source: Option<String>,
 }
 
 fn default_assets_dir() -> String {
     "assets".to_string()
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CreatorConfig {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub creator_type: String, // "user" or "group"
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
