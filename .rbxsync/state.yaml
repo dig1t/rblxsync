@@ -1,4 +1,8 @@
 game_passes:
+  vip Pass:
+    id: 1648345452
+    icon_hash: d10d87f26f4ae5705633f9ee71d98101e6decc40c50b08eb9e24a5ea22fae61f
+    icon_asset_id: 70489158699215
   VIP Pass:
     id: 1648345452
     icon_hash: d10d87f26f4ae5705633f9ee71d98101e6decc40c50b08eb9e24a5ea22fae61f
@@ -8,8 +12,20 @@ developer_products:
     id: 3494807013
     icon_hash: d10d87f26f4ae5705633f9ee71d98101e6decc40c50b08eb9e24a5ea22fae61f
     icon_asset_id: 132163425343458
+  speed Boost:
+    id: 3494807013
+    icon_hash: d10d87f26f4ae5705633f9ee71d98101e6decc40c50b08eb9e24a5ea22fae61f
+    icon_asset_id: 132163425343458
 badges:
   First Win:
+    id: 1070369018590566
+    icon_hash: d10d87f26f4ae5705633f9ee71d98101e6decc40c50b08eb9e24a5ea22fae61f
+    icon_asset_id: null
+  2nd Win:
+    id: 3177800262150813
+    icon_hash: d10d87f26f4ae5705633f9ee71d98101e6decc40c50b08eb9e24a5ea22fae61f
+    icon_asset_id: null
+  first Win:
     id: 1070369018590566
     icon_hash: d10d87f26f4ae5705633f9ee71d98101e6decc40c50b08eb9e24a5ea22fae61f
     icon_asset_id: null

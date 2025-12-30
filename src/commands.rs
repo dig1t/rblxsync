@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use log::{info, warn, error};
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClient, dry_run: bool) -> Result<()> {
     info!("Starting sync... (dry_run: {})", dry_run);
@@ -83,15 +83,19 @@ pub async fn publish(config: RbxSyncConfig, client: RobloxClient) -> Result<()> 
 
 async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Game Passes...");
+    
+    // Check for duplicate names (case-insensitive)
+    let names: Vec<&str> = config.game_passes.iter().map(|p| p.name.as_str()).collect();
+    check_for_duplicates(&names, "game pass")?;
+    
+    let mut created_count = 0;
+    let mut updated_count = 0;
+    let mut skipped_count = 0;
+    
     // Fetch existing to handle initial discovery
     let existing = if !dry_run {
          client.list_game_passes(universe_id, None).await?
     } else {
-        // In dry-run, we might fail if we try to fetch from invalid universe.
-        // Try to fetch, but log error and return empty if fails? 
-        // Or just fail? 
-        // Better to fail if credentials are wrong, but for dry-run "what-if", maybe we want to continue?
-        // Let's stick to standard behavior: dry-run should verify access too.
         match client.list_game_passes(universe_id, None).await {
             Ok(r) => r,
             Err(e) => {
@@ -101,10 +105,9 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
         }
     };
 
-    let mut remote_map: HashMap<String, u64> = HashMap::new();
+    let mut remote_map: HashMap<String, (String, u64)> = HashMap::new();
     for item in &existing.data {
         log::debug!("Game pass item from API: {}", item);
-        // Try both "id" and "gamePassId" fields, and handle string or number
         let id = item["id"].as_u64()
             .or_else(|| item["gamePassId"].as_u64())
             .or_else(|| item["id"].as_str().and_then(|s| s.parse().ok()))
@@ -112,43 +115,64 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
         
         if let (Some(name), Some(id)) = (item["name"].as_str(), id) {
             log::debug!("Found game pass: {} with ID: {}", name, id);
-            remote_map.insert(name.to_string(), id);
+            remote_map.insert(name.to_lowercase(), (name.to_string(), id));
         }
     }
 
     for pass in &config.game_passes {
+        // Case-insensitive state lookup
+        let state_entry = state.game_passes.iter()
+            .find(|(k, _)| k.to_lowercase() == pass.name.to_lowercase())
+            .map(|(_, v)| v);
         let mut asset_id = None;
         let mut icon_hash = None;
+        let mut icon_changed = false;
+        let mut changes: Vec<&str> = Vec::new();
 
-        // Handle Icon
+        // Handle Icon - calculate hash and check for changes
         if let Some(icon_path_str) = &pass.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
-            let state_entry = state.game_passes.get(&pass.name);
-            if dry_run {
-                info!("Dry Run: Would process icon from: {:?}", icon_path);
-                // Simulate success
+            let current_hash = calculate_file_hash(&icon_path).await?;
+            let stored_hash = state_entry.and_then(|s| s.icon_hash.as_ref());
+            
+            if stored_hash == Some(&current_hash) && state_entry.and_then(|s| s.icon_asset_id).is_some() {
+                asset_id = state_entry.and_then(|s| s.icon_asset_id);
+                icon_hash = Some(current_hash);
+                icon_changed = false;
+            } else if dry_run {
                 asset_id = Some(0); 
-                icon_hash = Some("dry_run_hash".to_string());
+                icon_hash = Some(current_hash);
+                icon_changed = true;
+                changes.push("icon");
             } else {
                 let creator = config.creator.as_ref().ok_or_else(|| anyhow!("Creator configuration is required for asset uploads"))?;
                 let (aid, hash) = ensure_icon(client, &icon_path, state_entry, creator).await?;
                 asset_id = Some(aid);
                 icon_hash = Some(hash);
+                icon_changed = true;
+                changes.push("icon");
             }
         }
 
-        // Determine ID (State -> Remote -> Create)
-        let id = if let Some(sid) = state.get_game_pass_id(&pass.name) {
+        // Determine ID (State -> Remote -> Create) - case-insensitive matching
+        let state_id = state.game_passes.iter()
+            .find(|(k, _)| k.to_lowercase() == pass.name.to_lowercase())
+            .map(|(_, v)| v.id);
+        let remote_entry = remote_map.get(&pass.name.to_lowercase());
+        let is_new = state_id.is_none() && remote_entry.is_none();
+        
+        let id = if let Some(sid) = state_id {
             sid
-        } else if let Some(rid) = remote_map.get(&pass.name) {
+        } else if let Some((_, rid)) = remote_entry {
             *rid
         } else {
-            // Create
             if dry_run {
-                info!("Dry Run: Would create Game Pass: {}", pass.name);
-                0 // Dummy ID
+                info!("  [CREATE] Game Pass '{}' - would create with: name, description, price{}", 
+                    pass.name, 
+                    if pass.icon.is_some() { ", icon" } else { "" });
+                created_count += 1;
+                0
             } else {
-                info!("Creating Game Pass: {}", pass.name);
                 let mut body = serde_json::json!({
                     "name": pass.name,
                     "description": pass.description.clone().unwrap_or_default(),
@@ -159,7 +183,12 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
                 }
                 
                 let resp = client.create_game_pass(universe_id, &body).await?;
-                resp["id"].as_u64().ok_or(anyhow!("Created game pass has no ID"))?
+                let new_id = resp["id"].as_u64().ok_or(anyhow!("Created game pass has no ID"))?;
+                info!("  [CREATED] Game Pass '{}' (ID: {}) - created with: name, description, price{}", 
+                    pass.name, new_id,
+                    if pass.icon.is_some() { ", icon" } else { "" });
+                created_count += 1;
+                new_id
             }
         };
 
@@ -168,39 +197,65 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
             state.update_game_pass(pass.name.clone(), id, icon_hash.clone(), asset_id);
         }
 
-        // Update Remote (Idempotent PATCH)
-        if dry_run {
-            info!("Dry Run: Would update Game Pass: {}", pass.name);
-        } else {
-            info!("Updating Game Pass: {}", pass.name);
+        // Update Remote (Idempotent PATCH) - only if newly created or icon changed
+        if is_new {
+            // Already created above
+        } else if dry_run {
+            if icon_changed {
+                info!("  [UPDATE] Game Pass '{}' (ID: {}) - would update: {}", 
+                    pass.name, id, changes.join(", "));
+                updated_count += 1;
+            } else {
+                info!("  [SKIP] Game Pass '{}' (ID: {}) - no changes detected", pass.name, id);
+                skipped_count += 1;
+            }
+        } else if icon_changed {
             let mut patch = serde_json::Map::new();
             patch.insert("name".to_string(), pass.name.clone().into());
             if let Some(d) = &pass.description { patch.insert("description".to_string(), d.clone().into()); }
             if let Some(p) = pass.price_in_robux { patch.insert("price".to_string(), p.into()); }
-            // Note: file requires binary upload, handled separately if needed
-            let _ = asset_id; // Silence unused warning for now
             
             client.update_game_pass(universe_id, id, &serde_json::Value::Object(patch)).await?;
+            info!("  [UPDATED] Game Pass '{}' (ID: {}) - updated: {}", 
+                pass.name, id, changes.join(", "));
+            updated_count += 1;
+        } else {
+            info!("  [SKIP] Game Pass '{}' (ID: {}) - no changes detected", pass.name, id);
+            skipped_count += 1;
         }
     }
+    
+    info!("Game Passes Summary: {} created, {} updated, {} skipped (unchanged)", 
+        created_count, updated_count, skipped_count);
     Ok(())
 }
 
 async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Developer Products...");
-    // Similar logic...
+    
+    // Check for duplicate names (case-insensitive)
+    let names: Vec<&str> = config.developer_products.iter().map(|p| p.name.as_str()).collect();
+    check_for_duplicates(&names, "developer product")?;
+    
+    let mut created_count = 0;
+    let mut updated_count = 0;
+    let mut skipped_count = 0;
+    
     let existing = if !dry_run {
         client.list_developer_products(universe_id, None).await?
     } else {
-        // In dry-run mode, assume no existing products to simulate creation scenario
-        info!("Dry Run: Simulating empty developer products list");
-        crate::api::ListResponse { data: vec![], next_page_cursor: None }
+        match client.list_developer_products(universe_id, None).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Dry Run: Failed to list developer products: {}", e);
+                crate::api::ListResponse { data: vec![], next_page_cursor: None }
+            }
+        }
     };
 
-    let mut remote_map: HashMap<String, u64> = HashMap::new();
+    let mut remote_map: HashMap<String, (String, u64)> = HashMap::new();
     for item in &existing.data {
         log::debug!("Developer product item from API: {}", item);
-        // Try multiple possible ID field names
         let id = item["id"].as_u64()
             .or_else(|| item["productId"].as_u64())
             .or_else(|| item["developerProductId"].as_u64())
@@ -209,89 +264,153 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
         
         if let (Some(name), Some(id)) = (item["name"].as_str(), id) {
             log::debug!("Found developer product: {} with ID: {}", name, id);
-            remote_map.insert(name.to_string(), id);
+            remote_map.insert(name.to_lowercase(), (name.to_string(), id));
         }
     }
 
     for prod in &config.developer_products {
+        // Case-insensitive state lookup
+        let state_entry = state.developer_products.iter()
+            .find(|(k, _)| k.to_lowercase() == prod.name.to_lowercase())
+            .map(|(_, v)| v);
         let mut asset_id = None;
         let mut icon_hash = None;
+        let mut icon_changed = false;
+        let mut changes: Vec<&str> = Vec::new();
 
         if let Some(icon_path_str) = &prod.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
-            let state_entry = state.developer_products.get(&prod.name);
-            if dry_run {
-                info!("Dry Run: Would process icon from: {:?}", icon_path);
+            let current_hash = calculate_file_hash(&icon_path).await?;
+            let stored_hash = state_entry.and_then(|s| s.icon_hash.as_ref());
+            
+            if stored_hash == Some(&current_hash) && state_entry.and_then(|s| s.icon_asset_id).is_some() {
+                asset_id = state_entry.and_then(|s| s.icon_asset_id);
+                icon_hash = Some(current_hash);
+                icon_changed = false;
+            } else if dry_run {
                 asset_id = Some(0);
-                icon_hash = Some("dry_run_hash".to_string());
+                icon_hash = Some(current_hash);
+                icon_changed = true;
+                changes.push("icon");
             } else {
                 let creator = config.creator.as_ref().ok_or_else(|| anyhow!("Creator configuration is required for asset uploads"))?;
                 let (aid, hash) = ensure_icon(client, &icon_path, state_entry, creator).await?;
                 asset_id = Some(aid);
                 icon_hash = Some(hash);
+                icon_changed = true;
+                changes.push("icon");
             }
         }
 
-        let id = if let Some(sid) = state.developer_products.get(&prod.name).map(|r| r.id) {
+        // Case-insensitive matching for ID lookup
+        let state_id = state.developer_products.iter()
+            .find(|(k, _)| k.to_lowercase() == prod.name.to_lowercase())
+            .map(|(_, v)| v.id);
+        let remote_entry = remote_map.get(&prod.name.to_lowercase());
+        let is_new = state_id.is_none() && remote_entry.is_none();
+
+        let id = if let Some(sid) = state_id {
             sid
-        } else if let Some(rid) = remote_map.get(&prod.name) {
+        } else if let Some((_, rid)) = remote_entry {
             *rid
         } else {
-             if dry_run {
-                 info!("Dry Run: Would create Developer Product: {}", prod.name);
-                 0
-             } else {
-                 info!("Creating Developer Product: {}", prod.name);
-                 let mut body = serde_json::json!({
-                     "name": prod.name,
-                     "price": prod.price_in_robux,
-                     "description": prod.description.clone().unwrap_or_default(),
-                 });
-                 if let Some(aid) = asset_id { body["iconAssetId"] = aid.into(); }
-                 let resp = client.create_developer_product(universe_id, &body).await?;
-                 resp["id"].as_u64().ok_or(anyhow!("Created product has no ID"))?
-             }
+            if dry_run {
+                info!("  [CREATE] Developer Product '{}' - would create with: name, price, description{}", 
+                    prod.name,
+                    if prod.icon.is_some() { ", icon" } else { "" });
+                created_count += 1;
+                0
+            } else {
+                let mut body = serde_json::json!({
+                    "name": prod.name,
+                    "price": prod.price_in_robux,
+                    "description": prod.description.clone().unwrap_or_default(),
+                });
+                if let Some(aid) = asset_id { body["iconAssetId"] = aid.into(); }
+                let resp = client.create_developer_product(universe_id, &body).await?;
+                let new_id = resp["id"].as_u64().ok_or(anyhow!("Created product has no ID"))?;
+                info!("  [CREATED] Developer Product '{}' (ID: {}) - created with: name, price, description{}", 
+                    prod.name, new_id,
+                    if prod.icon.is_some() { ", icon" } else { "" });
+                created_count += 1;
+                new_id
+            }
         };
 
         if !dry_run {
             state.update_developer_product(prod.name.clone(), id, icon_hash, asset_id);
         }
 
-        if dry_run {
-            info!("Dry Run: Would update Developer Product: {}", prod.name);
-        } else {
-            info!("Updating Developer Product: {}", prod.name);
+        // Update Remote (Idempotent PATCH) - only if newly created or icon changed
+        if is_new {
+            // Already created above
+        } else if dry_run {
+            if icon_changed {
+                info!("  [UPDATE] Developer Product '{}' (ID: {}) - would update: {}", 
+                    prod.name, id, changes.join(", "));
+                updated_count += 1;
+            } else {
+                info!("  [SKIP] Developer Product '{}' (ID: {}) - no changes detected", prod.name, id);
+                skipped_count += 1;
+            }
+        } else if icon_changed {
             let mut patch = serde_json::Map::new();
             patch.insert("name".to_string(), prod.name.clone().into());
             patch.insert("price".to_string(), prod.price_in_robux.into());
             if let Some(d) = &prod.description { patch.insert("description".to_string(), d.clone().into()); }
-            // Note: imageFile requires binary upload, handled separately if needed
-            let _ = asset_id; // Silence unused warning for now
             
             client.update_developer_product(universe_id, id, &serde_json::Value::Object(patch)).await?;
+            info!("  [UPDATED] Developer Product '{}' (ID: {}) - updated: {}", 
+                prod.name, id, changes.join(", "));
+            updated_count += 1;
+        } else {
+            info!("  [SKIP] Developer Product '{}' (ID: {}) - no changes detected", prod.name, id);
+            skipped_count += 1;
         }
     }
+    
+    info!("Developer Products Summary: {} created, {} updated, {} skipped (unchanged)", 
+        created_count, updated_count, skipped_count);
     Ok(())
 }
 
 async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Badges...");
-     let existing = if !dry_run {
-         client.list_badges(universe_id, None).await?
-     } else {
-        // In dry-run mode, assume no existing badges to simulate creation scenario
-        info!("Dry Run: Simulating empty badges list");
-        crate::api::ListResponse { data: vec![], next_page_cursor: None }
-     };
+    
+    // Check for duplicate names (case-insensitive)
+    let names: Vec<&str> = config.badges.iter().map(|b| b.name.as_str()).collect();
+    check_for_duplicates(&names, "badge")?;
+    
+    let mut created_count = 0;
+    let mut updated_count = 0;
+    let mut skipped_count = 0;
+    
+    let existing = if !dry_run {
+        client.list_badges(universe_id, None).await?
+    } else {
+        match client.list_badges(universe_id, None).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Dry Run: Failed to list badges: {}", e);
+                crate::api::ListResponse { data: vec![], next_page_cursor: None }
+            }
+        }
+    };
 
-    let mut remote_map: HashMap<String, u64> = HashMap::new();
+    let mut remote_map: HashMap<String, (String, u64)> = HashMap::new();
     for item in existing.data {
         if let (Some(name), Some(id)) = (item["name"].as_str(), item["id"].as_u64()) {
-            remote_map.insert(name.to_string(), id);
+            remote_map.insert(name.to_lowercase(), (name.to_string(), id));
         }
     }
 
     for badge in &config.badges {
+        // Case-insensitive state lookup
+        let state_entry = state.badges.iter()
+            .find(|(k, _)| k.to_lowercase() == badge.name.to_lowercase())
+            .map(|(_, v)| v);
+        let mut changes: Vec<&str> = Vec::new();
+        
         // Prepare icon data if provided
         let icon_data = if let Some(icon_path_str) = &badge.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
@@ -299,7 +418,6 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
                 let data = tokio::fs::read(&icon_path).await?;
                 let filename = icon_path.file_name().unwrap_or_default().to_string_lossy().to_string();
                 
-                // Calculate hash for change detection
                 let mut hasher = Sha256::new();
                 hasher.update(&data);
                 let hash = format!("{:x}", hasher.finalize());
@@ -313,48 +431,74 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
             None
         };
 
-        let id = if let Some(sid) = state.badges.get(&badge.name).map(|r| r.id) {
+        // Check if icon has changed
+        let icon_changed = if let Some((_, _, new_hash)) = &icon_data {
+            let stored_hash = state_entry.and_then(|s| s.icon_hash.as_ref());
+            if stored_hash != Some(new_hash) {
+                changes.push("icon");
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // Case-insensitive matching for ID lookup
+        let state_id = state.badges.iter()
+            .find(|(k, _)| k.to_lowercase() == badge.name.to_lowercase())
+            .map(|(_, v)| v.id);
+        let remote_entry = remote_map.get(&badge.name.to_lowercase());
+        let is_new = state_id.is_none() && remote_entry.is_none();
+
+        let id = if let Some(sid) = state_id {
             sid
-        } else if let Some(rid) = remote_map.get(&badge.name) {
+        } else if let Some((_, rid)) = remote_entry {
             *rid
         } else {
-             if dry_run {
-                 info!("Dry Run: Would create Badge: {}", badge.name);
-                 0
-             } else {
-                 info!("Creating Badge: {}", badge.name);
-                 let image_for_create = icon_data.as_ref().map(|(data, filename, _)| (data.clone(), filename.clone()));
-                 
-                 let result = client.create_badge(
-                     universe_id,
-                     &badge.name,
-                     badge.description.as_deref().unwrap_or(""),
-                     image_for_create,
-                     config.badge_payment_source.as_deref()
-                 ).await;
-                 
-                 // Handle payment source errors with helpful message
-                 let resp = match result {
-                     Ok(r) => r,
-                     Err(e) => {
-                         let err_str = e.to_string();
-                         if err_str.contains("Payment source is invalid") || err_str.contains("code\":16") {
-                             error!("Badge creation failed: Payment source is required.");
-                             error!("");
-                             error!("Creating badges costs 100 Robux. Please add the following to your rbxsync.yml:");
-                             error!("");
-                             error!("  badge_payment_source: \"user\"   # Pay from your user account");
-                             error!("  # OR");
-                             error!("  badge_payment_source: \"group\"  # Pay from group funds");
-                             error!("");
-                             return Err(anyhow!("Badge creation requires badge_payment_source configuration"));
-                         }
-                         return Err(e);
-                     }
-                 };
-                 
-                 resp["id"].as_u64().ok_or(anyhow!("Created badge has no ID"))?
-             }
+            if dry_run {
+                info!("  [CREATE] Badge '{}' - would create with: name, description{}", 
+                    badge.name,
+                    if badge.icon.is_some() { ", icon" } else { "" });
+                created_count += 1;
+                0
+            } else {
+                let image_for_create = icon_data.as_ref().map(|(data, filename, _)| (data.clone(), filename.clone()));
+                
+                let result = client.create_badge(
+                    universe_id,
+                    &badge.name,
+                    badge.description.as_deref().unwrap_or(""),
+                    image_for_create,
+                    config.badge_payment_source.as_deref()
+                ).await;
+                
+                let resp = match result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        if err_str.contains("Payment source is invalid") || err_str.contains("code\":16") {
+                            error!("Badge creation failed: Payment source is required.");
+                            error!("");
+                            error!("Creating badges costs 100 Robux. Please add the following to your rbxsync.yml:");
+                            error!("");
+                            error!("  badge_payment_source: \"user\"   # Pay from your user account");
+                            error!("  # OR");
+                            error!("  badge_payment_source: \"group\"  # Pay from group funds");
+                            error!("");
+                            return Err(anyhow!("Badge creation requires badge_payment_source configuration"));
+                        }
+                        return Err(e);
+                    }
+                };
+                
+                let new_id = resp["id"].as_u64().ok_or(anyhow!("Created badge has no ID"))?;
+                info!("  [CREATED] Badge '{}' (ID: {}) - created with: name, description{}", 
+                    badge.name, new_id,
+                    if badge.icon.is_some() { ", icon" } else { "" });
+                created_count += 1;
+                new_id
+            }
         };
 
         // Update state with icon hash
@@ -363,10 +507,19 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
             state.update_badge(badge.name.clone(), id, icon_hash.clone(), None);
         }
 
-        if dry_run {
-             info!("Dry Run: Would update Badge: {}", badge.name);
-        } else {
-            info!("Updating Badge: {}", badge.name);
+        // Update Remote (Idempotent PATCH) - only if newly created or icon changed
+        if is_new {
+            // Already created above
+        } else if dry_run {
+            if icon_changed {
+                info!("  [UPDATE] Badge '{}' (ID: {}) - would update: {}", 
+                    badge.name, id, changes.join(", "));
+                updated_count += 1;
+            } else {
+                info!("  [SKIP] Badge '{}' (ID: {}) - no changes detected", badge.name, id);
+                skipped_count += 1;
+            }
+        } else if icon_changed {
             let mut patch = serde_json::Map::new();
             patch.insert("name".to_string(), badge.name.clone().into());
             if let Some(d) = &badge.description { patch.insert("description".to_string(), d.clone().into()); }
@@ -374,21 +527,58 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
             
             client.update_badge(id, &serde_json::Value::Object(patch)).await?;
             
-            // Update icon if changed (check against stored hash)
-            if let Some((data, filename, new_hash)) = &icon_data {
-                let should_update = state.badges.get(&badge.name)
-                    .and_then(|s| s.icon_hash.as_ref())
-                    .map(|old_hash| old_hash != new_hash)
-                    .unwrap_or(true);
-                
-                if should_update {
-                    info!("Updating badge icon for: {}", badge.name);
-                    client.update_badge_icon(id, data.clone(), filename).await?;
-                }
+            // Update icon since it changed
+            if let Some((data, filename, _)) = &icon_data {
+                client.update_badge_icon(id, data.clone(), filename).await?;
             }
+            info!("  [UPDATED] Badge '{}' (ID: {}) - updated: {}", 
+                badge.name, id, changes.join(", "));
+            updated_count += 1;
+        } else {
+            info!("  [SKIP] Badge '{}' (ID: {}) - no changes detected", badge.name, id);
+            skipped_count += 1;
         }
     }
+    
+    info!("Badges Summary: {} created, {} updated, {} skipped (unchanged)", 
+        created_count, updated_count, skipped_count);
     Ok(())
+}
+
+/// Check for duplicate names (case-insensitive) in a list
+fn check_for_duplicates(names: &[&str], resource_type: &str) -> Result<()> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut duplicates: Vec<String> = Vec::new();
+    
+    for name in names {
+        let lower = name.to_lowercase();
+        if seen.contains(&lower) {
+            duplicates.push((*name).to_string());
+        } else {
+            seen.insert(lower);
+        }
+    }
+    
+    if !duplicates.is_empty() {
+        return Err(anyhow!(
+            "Duplicate {} names found (names must be unique, case-insensitive): {:?}",
+            resource_type,
+            duplicates
+        ));
+    }
+    
+    Ok(())
+}
+
+/// Calculate SHA-256 hash of a file
+async fn calculate_file_hash(path: &Path) -> Result<String> {
+    if !path.exists() {
+        return Err(anyhow!("File not found: {:?}", path));
+    }
+    let content = tokio::fs::read(path).await?;
+    let mut hasher = Sha256::new();
+    hasher.update(&content);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 async fn ensure_icon(client: &RobloxClient, path: &Path, state: Option<&ResourceState>, creator: &crate::config::CreatorConfig) -> Result<(u64, String)> {
