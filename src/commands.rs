@@ -371,7 +371,22 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
             patch.insert("price".to_string(), prod.price_in_robux.into());
             if let Some(d) = &prod.description { patch.insert("description".to_string(), d.clone().into()); }
             
-            client.update_developer_product(universe_id, id, &serde_json::Value::Object(patch)).await?;
+            // Read image file if icon is specified
+            let image_data = if let Some(icon_path_str) = &prod.icon {
+                let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
+                if icon_path.exists() {
+                    let data = tokio::fs::read(&icon_path).await?;
+                    let filename = icon_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    Some((data, filename))
+                } else {
+                    warn!("Developer product icon not found: {:?}", icon_path);
+                    None
+                }
+            } else {
+                None
+            };
+            
+            client.update_developer_product_with_icon(universe_id, id, &serde_json::Value::Object(patch), image_data).await?;
             info!("  [UPDATED] Developer Product '{}' (ID: {}) - updated: {}", 
                 prod.name, id, changes.join(", "));
             updated_count += 1;
