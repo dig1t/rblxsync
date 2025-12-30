@@ -13,3 +13,6 @@ target/
 .env
 rbxsync.yml
 assets
+
+# State file (contains local sync state)
+.rbxsync/state.yaml
