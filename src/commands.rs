@@ -7,8 +7,28 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::collections::{HashMap, HashSet};
 
+/// Validate the configuration for errors (including case-insensitive duplicate names)
+pub fn validate(config: &RbxSyncConfig) -> Result<()> {
+    // Check for duplicate game pass names (case-insensitive)
+    let game_pass_names: Vec<&str> = config.game_passes.iter().map(|p| p.name.as_str()).collect();
+    check_for_duplicates(&game_pass_names, "game pass")?;
+    
+    // Check for duplicate developer product names (case-insensitive)
+    let product_names: Vec<&str> = config.developer_products.iter().map(|p| p.name.as_str()).collect();
+    check_for_duplicates(&product_names, "developer product")?;
+    
+    // Check for duplicate badge names (case-insensitive)
+    let badge_names: Vec<&str> = config.badges.iter().map(|b| b.name.as_str()).collect();
+    check_for_duplicates(&badge_names, "badge")?;
+    
+    Ok(())
+}
+
 pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClient, dry_run: bool) -> Result<()> {
     info!("Starting sync... (dry_run: {})", dry_run);
+
+    // Validate config before proceeding
+    validate(&config)?;
 
     // 1. Universe Settings
     if let Some(_universe_id) = config.universe.name.as_ref().and(crate::config::Config::from_env().ok().and_then(|c| c.universe_id)) { 
@@ -83,10 +103,6 @@ pub async fn publish(config: RbxSyncConfig, client: RobloxClient) -> Result<()> 
 
 async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Game Passes...");
-    
-    // Check for duplicate names (case-insensitive)
-    let names: Vec<&str> = config.game_passes.iter().map(|p| p.name.as_str()).collect();
-    check_for_duplicates(&names, "game pass")?;
     
     let mut created_count = 0;
     let mut updated_count = 0;
@@ -233,10 +249,6 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
 async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Developer Products...");
     
-    // Check for duplicate names (case-insensitive)
-    let names: Vec<&str> = config.developer_products.iter().map(|p| p.name.as_str()).collect();
-    check_for_duplicates(&names, "developer product")?;
-    
     let mut created_count = 0;
     let mut updated_count = 0;
     let mut skipped_count = 0;
@@ -376,10 +388,6 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
 
 async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Badges...");
-    
-    // Check for duplicate names (case-insensitive)
-    let names: Vec<&str> = config.badges.iter().map(|b| b.name.as_str()).collect();
-    check_for_duplicates(&names, "badge")?;
     
     let mut created_count = 0;
     let mut updated_count = 0;

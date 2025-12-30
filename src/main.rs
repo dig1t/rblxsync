@@ -61,7 +61,14 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
             match RbxSyncConfig::load(path) {
-                Ok(_) => info!("Config file is valid."),
+                Ok(config) => {
+                    // Run additional validation checks
+                    if let Err(e) = commands::validate(&config) {
+                        error!("Config validation failed: {}", e);
+                        std::process::exit(1);
+                    }
+                    info!("Config file is valid.");
+                }
                 Err(e) => {
                     error!("Config validation failed: {}", e);
                     std::process::exit(1);
