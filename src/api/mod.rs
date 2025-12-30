@@ -119,6 +119,31 @@ impl RobloxClient {
         self.execute(self.request(Method::PATCH, &url).multipart(form)).await
     }
 
+    /// Update a developer product with an optional image file upload
+    pub async fn update_developer_product_with_icon(
+        &self, 
+        universe_id: u64, 
+        product_id: u64, 
+        data: &serde_json::Value,
+        image_data: Option<(Vec<u8>, String)>
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/developer-products/v2/universes/{}/developer-products/{}", BASE_URL, universe_id, product_id);
+        log::debug!("Updating developer product with icon at URL: {} with data: {}", url, data);
+        
+        let mut form = json_to_multipart(data);
+        
+        // Add image file if provided
+        if let Some((file_bytes, filename)) = image_data {
+            log::debug!("Adding imageFile to form: {} ({} bytes)", filename, file_bytes.len());
+            let file_part = reqwest::multipart::Part::bytes(file_bytes)
+                .file_name(filename)
+                .mime_str("image/png")?;
+            form = form.part("imageFile", file_part);
+        }
+        
+        self.execute(self.request(Method::PATCH, &url).multipart(form)).await
+    }
+
     // --- Badges ---
     // Note: Badges API is on badges.roblox.com for v1? The user query says:
     // https://badges.roblox.com/v1/universes/{universeId}/badges
