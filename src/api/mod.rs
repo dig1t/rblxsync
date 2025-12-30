@@ -92,6 +92,31 @@ impl RobloxClient {
         self.execute(self.request(Method::PATCH, &url).multipart(form)).await
     }
 
+    /// Update a game pass with an optional image file upload
+    pub async fn update_game_pass_with_icon(
+        &self, 
+        universe_id: u64, 
+        game_pass_id: u64, 
+        data: &serde_json::Value,
+        image_data: Option<(Vec<u8>, String)>
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/game-passes/v1/universes/{}/game-passes/{}", BASE_URL, universe_id, game_pass_id);
+        log::debug!("Updating game pass with icon at URL: {} with data: {}", url, data);
+        
+        let mut form = json_to_multipart(data);
+        
+        // Add image file if provided (game passes API uses "file" field name)
+        if let Some((file_bytes, filename)) = image_data {
+            log::debug!("Adding file to form: {} ({} bytes)", filename, file_bytes.len());
+            let file_part = reqwest::multipart::Part::bytes(file_bytes)
+                .file_name(filename)
+                .mime_str("image/png")?;
+            form = form.part("file", file_part);
+        }
+        
+        self.execute(self.request(Method::PATCH, &url).multipart(form)).await
+    }
+
     // --- Developer Products ---
 
     pub async fn list_developer_products(&self, universe_id: u64, page_token: Option<String>) -> Result<ListResponse<serde_json::Value>> {

@@ -231,7 +231,22 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
             if let Some(d) = &pass.description { patch.insert("description".to_string(), d.clone().into()); }
             if let Some(p) = pass.price_in_robux { patch.insert("price".to_string(), p.into()); }
             
-            client.update_game_pass(universe_id, id, &serde_json::Value::Object(patch)).await?;
+            // Read image file if icon is specified
+            let image_data = if let Some(icon_path_str) = &pass.icon {
+                let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
+                if icon_path.exists() {
+                    let data = tokio::fs::read(&icon_path).await?;
+                    let filename = icon_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    Some((data, filename))
+                } else {
+                    warn!("Game pass icon not found: {:?}", icon_path);
+                    None
+                }
+            } else {
+                None
+            };
+            
+            client.update_game_pass_with_icon(universe_id, id, &serde_json::Value::Object(patch), image_data).await?;
             info!("  [UPDATED] Game Pass '{}' (ID: {}) - updated: {}", 
                 pass.name, id, changes.join(", "));
             updated_count += 1;
