@@ -1,5 +1,11 @@
 assets_dir: assets/icons/
 
+# Creator configuration for assets
+# This defines who owns the uploaded icons and assets
+creator:
+  id: "12345678"  # User ID or Group ID
+  type: "user"    # "user" or "group"
+
 universe:
   name: "My Awesome Game"
   description: "Updated via rbxsync!"
@@ -20,6 +26,10 @@ developer_products:
     price_in_robux: 50
     icon: "boost.png"
     is_active: true
+
+# Payment source for badge creation (costs 100 Robux per badge)
+# Options: "user" (pay from your account) or "group" (pay from group funds)
+badge_payment_source: "group"
 
 badges:
   - name: "First Win"

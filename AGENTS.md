@@ -64,3 +64,13 @@ This file guides AI agents working on the `rbxsync` project. It serves as contex
 ## Testing
 - **Manual Sync**: `cargo run -- run --dry-run` (Note: dry-run logic may be partial).
 - **Publish Test**: `cargo run -- publish` (Ensure `publish: true` in config).
+
+## Roblox API and Docs
+Refer to these links for official roblox documentation.
+
+- https://raw.githubusercontent.com/Roblox/creator-docs/refs/heads/main/content/en-us/reference/cloud/openapi.json
+- https://create.roblox.com/docs/cloud/reference/openapi
+- https://github.com/Roblox/creator-docs/blob/main/content/en-us/cloud/reference/errors.md
+- https://github.com/Roblox/creator-docs/blob/main/content/en-us/cloud/guides/secrets-store.md
+- https://github.com/Roblox/creator-docs/blob/main/content/en-us/cloud/guides/usage-assets.md
+- https://github.com/Roblox/creator-docs/blob/main/content/en-us/cloud/guides/usage-place-publishing.md
