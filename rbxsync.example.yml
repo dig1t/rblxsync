@@ -1,0 +1,42 @@
+assets_dir: assets/icons/
+
+badge_payment_source: "user" # If payment is needed to create badges, set to "user" to pay from your account, or "group" to pay from group funds
+output_path: "src/shared/Config.luau"
+
+creator:
+  id: "12345678" # User ID or Group ID
+  type: "user" # "user" or "group"
+
+universe:
+  id: 123456789 # Your Universe ID (required)
+  name: "My Awesome Game"
+  description: "Updated via rbxsync!"
+  genre: "adventure"
+  playable_devices: ["computer", "phone", "tablet"] # "computer", "phone", "tablet", "console", "vr"
+  max_players: 50
+  private_server_cost: "disabled" # "disabled" to disable private servers, "0" for free private servers, "100" for paid private servers
+
+game_passes:
+  - name: "VIP Pass"
+    description: "Exclusive access and perks"
+    price: 100
+    icon: "vip.png"
+    is_for_sale: true
+
+developer_products:
+  - name: "Speed Boost"
+    description: "Double speed for 5 minutes"
+    price: 50
+    icon: "boost.png"
+    is_active: true
+
+badges:
+  - name: "First Win"
+    description: "Awarded for your first victory!"
+    icon: "first_win.png"
+    is_enabled: true
+
+places:
+  - place_id: 1234567890
+    file_path: "places/start_place.rbxl"
+    publish: true

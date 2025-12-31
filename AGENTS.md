@@ -3,55 +3,76 @@
 This file guides AI agents working on the `rbxsync` project. It serves as context for understanding the codebase, conventions, and development workflow.
 
 ## Project Overview
-`rbxsync` is a Rust-based CLI tool and GitHub Action for interacting with the Roblox Open Cloud API. It handles authentication, request signing, and data synchronization.
+`rbxsync` is a Rust-based CLI tool and GitHub Action for **declaratively managing** Roblox experience metadata via the Open Cloud API. It supports synchronizing Universe settings, Game Passes, Developer Products, Badges, and Places from a local YAML configuration file (`rbxsync.yml`).
 
 ## Tech Stack
 - **Language**: Rust (2021 edition)
 - **CLI Framework**: `clap` (derive feature)
-- **HTTP Client**: `reqwest` (async, json, rustls)
+- **HTTP Client**: `reqwest` (async, json, multipart, rustls)
 - **Async Runtime**: `tokio`
-- **Serialization**: `serde` & `serde_json`
+- **Serialization**: `serde`, `serde_json`, `serde_yaml`
+- **Hashing**: `sha2` (for icon change detection)
 - **Error Handling**: `anyhow` for application-level errors.
 - **Logging**: `log` & `env_logger`.
 
 ## Directory Structure
-- `src/main.rs`: CLI entry point, command parsing, and high-level execution flow.
-- `src/api/mod.rs`: `RobloxClient` implementation. Encapsulates all HTTP interaction logic.
-- `src/config.rs`: Configuration loading logic (env vars and `.env`).
-- `action.yml`: GitHub Action metadata for using this tool in CI workflows.
+- `src/main.rs`: CLI entry point. Handles arguments, loads env vars, and dispatches commands (`Run`, `Publish`, `Export`, `Validate`).
+- `src/api/mod.rs`: `RobloxClient` implementation. Encapsulates all Open Cloud API interactions (PATCH, POST, GET, Multipart Uploads).
+- `src/config.rs`: 
+    - `Config`: Loads environment variables (`ROBLOX_API_KEY`).
+    - `RbxSyncConfig`: Structs for parsing `rbxsync.yml` configuration.
+- `src/state.rs`: Manages `rbxsync-lock.yml`. Tracks resource IDs and local icon hashes for idempotent updates.
+- `src/commands.rs`: Core business logic for `run`, `publish`, and `export` commands.
+- `action.yml`: GitHub Action metadata.
 
 ## Development Guidelines
 
-### Adding New Commands
-1.  **Define Subcommand**: Add a variant to the `Commands` enum in `src/main.rs`.
-2.  **Implement Logic**: Create a new async method in `RobloxClient` (`src/api/mod.rs`) that handles the API interaction.
-3.  **Wire Up**: Match the new subcommand in `main` and call the client method.
-4.  **Logging**: Use `info!` for progress and `error!` for failures.
+### Workflow
+1.  **Configuration Driven**: The source of truth is `rbxsync.yml`.
+2.  **Idempotency**: Operations should be idempotent.
+    - Match resources by **name** (case-sensitive).
+    - Create if missing.
+    - Update if exists (PATCH).
+    - **Icons**: Calculate SHA-256 of local file. Compare with stored hash in `rbxsync-lock.yml`. Only upload if changed.
 
-### Adding New API Endpoints
-- Extend `RobloxClient` in `src/api/mod.rs`.
-- Use the provided `self.get` or `self.post` helper methods. These automatically handle:
-    - Base URL prepending (`https://apis.roblox.com`)
-    - API Key injection (`x-api-key` header)
-    - Status code validation (converts non-200s to errors)
-- Create strongly typed structs for request/response bodies using `serde` when possible. Fallback to `serde_json::Value` only for untyped or dynamic data.
+### CLI Commands
+- `rbxsync run`: Syncs universe settings + assets (Game Passes, Products, Badges).
+- `rbxsync publish`: Publishes places defined in config.
+- `rbxsync export`: Pulls existing data and generates a Luau/Lua config.
+- `rbxsync validate`: Validates the YAML config format.
+
+### API Integration (`src/api/mod.rs`)
+- **Universe**: `PATCH .../configuration`
+- **Game Passes/Products**: Standard GET/POST/PATCH flow.
+- **Assets**: `POST .../assets` (Multipart). Requires polling the operation for `assetId`.
+- **Places**: `POST .../versions` (Binary body).
+
+### Adding New Features
+1.  **Update Config**: Add fields to `RbxSyncConfig` in `src/config.rs`.
+2.  **Update State**: Add tracking fields to `SyncState` in `src/state.rs` if ID/Hash persistence is needed.
+3.  **Implement Logic**: Add logic to `src/commands.rs`.
+4.  **API Support**: Add methods to `RobloxClient` in `src/api/mod.rs`.
 
 ### Error Handling
-- Use `anyhow::Result` for most return types to simplify error propagation.
-- Add context to errors using `.context("message")` when bubbling up.
-- Avoid `.unwrap()` in production code; use `?` or `unwrap_or_else`.
-
-### Style & Linting
-- Follow standard Rust formatting (`cargo fmt`).
-- Ensure `cargo clippy` passes without warnings.
-- Prefer `cloned()` over `clone()` for iterators/options where applicable.
+- Use `anyhow::Result` for return types.
+- Contextualize errors: `.context("Failed to upload icon")?`.
 
 ## Environment Variables
-The application relies on `Config::from_env()` in `src/config.rs`:
-- `ROBLOX_API_KEY`: **Required**. The Open Cloud API Key.
-- `ROBLOX_UNIVERSE_ID`: Required for universe-specific operations (e.g., Datastores, Messaging Service).
+- `ROBLOX_API_KEY`: **Required**. Open Cloud API Key with permissions for Universe, Game Passes, Badges, Products, Assets, and Places.
+
+## Configuration
+- `universe.id`: **Required** in `rbxsync.yml`. The target Universe ID.
 
 ## Testing
-- **Unit Tests**: `cargo test`
-- **Manual CLI Test**: `cargo run -- list-datastores --limit 1` (Requires `.env` file with valid credentials).
+- **Manual Sync**: `cargo run -- run --dry-run` (Note: dry-run logic may be partial).
+- **Publish Test**: `cargo run -- publish` (Ensure `publish: true` in config).
 
+## Roblox API and Docs
+Refer to these links for official roblox documentation.
+
+- https://raw.githubusercontent.com/Roblox/creator-docs/refs/heads/main/content/en-us/reference/cloud/openapi.json
+- https://create.roblox.com/docs/cloud/reference/openapi
+- https://github.com/Roblox/creator-docs/blob/main/content/en-us/cloud/reference/errors.md
+- https://github.com/Roblox/creator-docs/blob/main/content/en-us/cloud/guides/secrets-store.md
+- https://github.com/Roblox/creator-docs/blob/main/content/en-us/cloud/guides/usage-assets.md
+- https://github.com/Roblox/creator-docs/blob/main/content/en-us/cloud/guides/usage-place-publishing.md
