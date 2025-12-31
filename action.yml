@@ -1,31 +1,65 @@
-name: 'Roblox API Sync'
-description: 'CLI tool to interact with Roblox Cloud API'
+name: 'rbxsync'
+description: 'Declaratively manage Roblox experience metadata via Open Cloud API'
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
+
 inputs:
   api_key:
     description: 'Roblox Open Cloud API Key'
     required: true
   command:
-    description: 'Subcommand to run (e.g., list-datastores)'
-    required: true
-    default: 'help'
+    description: 'Command to run: run, publish, validate, or export'
+    required: false
+    default: 'run'
+  config:
+    description: 'Path to rbxsync.yml config file'
+    required: false
+    default: 'rbxsync.yml'
   args:
-    description: 'Additional arguments'
+    description: 'Additional arguments (e.g., --dry-run for run command)'
+    required: false
+    default: ''
+  roblox_cookie:
+    description: 'Roblox .ROBLOSECURITY cookie (required for universe settings)'
     required: false
     default: ''
 
 runs:
   using: "composite"
   steps:
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
+    - name: Checkout rbxsync
+      uses: actions/checkout@v4
       with:
-        toolchain: stable
-        override: true
-    
-    - name: Build and Run
+        repository: dig1t/rbxsync
+        path: .rbxsync-action
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          .rbxsync-action/target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('.rbxsync-action/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build rbxsync
+      shell: bash
+      working-directory: .rbxsync-action
+      run: cargo build --release
+
+    - name: Run rbxsync
       shell: bash
       env:
         ROBLOX_API_KEY: ${{ inputs.api_key }}
+        ROBLOX_COOKIE: ${{ inputs.roblox_cookie }}
       run: |
-        cargo run --release -- ${{ inputs.command }} ${{ inputs.args }}
+        .rbxsync-action/target/release/rbxsync ${{ inputs.command }} --config ${{ inputs.config }} ${{ inputs.args }}
 

@@ -71,6 +71,137 @@ cargo install --path .
 
 Download pre-built binaries from the [Releases](https://github.com/dig1t/rbxsync/releases) page.
 
+---
+
+## GitHub Action
+
+Use `rbxsync` directly in your GitHub Actions workflows for automated deployments.
+
+### Basic Usage
+
+```yaml
+name: Sync Roblox Experience
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync Roblox metadata
+        uses: dig1t/rbxsync@v1
+        with:
+          api_key: ${{ secrets.ROBLOX_API_KEY }}
+```
+
+### Action Inputs
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `api_key` | **Yes** | - | Roblox Open Cloud API Key |
+| `command` | No | `run` | Command to run: `run`, `publish`, `validate`, or `export` |
+| `config` | No | `rbxsync.yml` | Path to config file |
+| `args` | No | - | Additional arguments (e.g., `--dry-run`) |
+| `roblox_cookie` | No | - | `.ROBLOSECURITY` cookie (required for universe settings) |
+
+### Examples
+
+#### Sync on Push to Main
+
+```yaml
+name: Deploy to Roblox
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync metadata
+        uses: dig1t/rbxsync@v1
+        with:
+          api_key: ${{ secrets.ROBLOX_API_KEY }}
+          command: run
+
+      - name: Publish places
+        uses: dig1t/rbxsync@v1
+        with:
+          api_key: ${{ secrets.ROBLOX_API_KEY }}
+          command: publish
+```
+
+#### With Universe Settings (Requires Cookie)
+
+```yaml
+- name: Sync with universe settings
+  uses: dig1t/rbxsync@v1
+  with:
+    api_key: ${{ secrets.ROBLOX_API_KEY }}
+    roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
+    command: run
+```
+
+#### Dry Run on Pull Requests
+
+```yaml
+name: Preview Changes
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preview sync changes
+        uses: dig1t/rbxsync@v1
+        with:
+          api_key: ${{ secrets.ROBLOX_API_KEY }}
+          command: run
+          args: --dry-run
+```
+
+#### Validate Config
+
+```yaml
+- name: Validate rbxsync config
+  uses: dig1t/rbxsync@v1
+  with:
+    api_key: ${{ secrets.ROBLOX_API_KEY }}
+    command: validate
+```
+
+#### Custom Config Path
+
+```yaml
+- name: Sync production config
+  uses: dig1t/rbxsync@v1
+  with:
+    api_key: ${{ secrets.ROBLOX_API_KEY }}
+    config: config/production.yml
+```
+
+### Setting Up Secrets
+
+1. Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions**
+2. Click **New repository secret**
+3. Add the following secrets:
+   - `ROBLOX_API_KEY`: Your Open Cloud API key
+   - `ROBLOX_COOKIE` (optional): Your `.ROBLOSECURITY` cookie for universe settings
+
+---
+
 ## Environment Variables
 
 | Variable | Required | Description |
