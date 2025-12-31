@@ -4,9 +4,6 @@ inputs:
   api_key:
     description: 'Roblox Open Cloud API Key'
     required: true
-  universe_id:
-    description: 'Target Universe ID'
-    required: false
   command:
     description: 'Subcommand to run (e.g., list-datastores)'
     required: true
@@ -29,7 +26,6 @@ runs:
       shell: bash
       env:
         ROBLOX_API_KEY: ${{ inputs.api_key }}
-        ROBLOX_UNIVERSE_ID: ${{ inputs.universe_id }}
       run: |
         cargo run --release -- ${{ inputs.command }} ${{ inputs.args }}
 

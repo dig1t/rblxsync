@@ -1,6 +1,6 @@
-use crate::api::RobloxClient;
-use crate::config::{RbxSyncConfig};
-use crate::state::{SyncState, ResourceState};
+use crate::api::{RobloxClient, RobloxCookieClient};
+use crate::config::{RbxSyncConfig, PrivateServerCost};
+use crate::state::{SyncState, ResourceState, UniverseState};
 use anyhow::{anyhow, Result};
 use log::{info, warn, error};
 use sha2::{Digest, Sha256};
@@ -24,42 +24,18 @@ pub fn validate(config: &RbxSyncConfig) -> Result<()> {
     Ok(())
 }
 
-pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClient, dry_run: bool) -> Result<()> {
+pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClient, cookie_client: Option<RobloxCookieClient>, dry_run: bool) -> Result<()> {
     info!("Starting sync... (dry_run: {})", dry_run);
 
     // Validate config before proceeding
     validate(&config)?;
-
-    // 1. Universe Settings
-    if let Some(_universe_id) = config.universe.name.as_ref().and(crate::config::Config::from_env().ok().and_then(|c| c.universe_id)) { 
-        // Logic to update universe settings if provided
-        // NOTE: The config.universe struct has fields like name, description etc.
-        // We need the universe ID from somewhere. 
-        // The user config has `universe` block, but usually `universe_id` is env var or arg?
-        // User query: "Universe: PATCH .../universes/{universeId}/configuration"
-        // User config example doesn't have ID in `universe` block, only metadata.
-        // ID comes from Env Var `ROBLOX_UNIVERSE_ID`.
-    }
     
-    let universe_id = std::env::var("ROBLOX_UNIVERSE_ID")
-        .map_err(|_| anyhow!("ROBLOX_UNIVERSE_ID is required for sync"))?
-        .parse::<u64>()?;
+    let universe_id = config.universe.id;
 
-    // Update Universe Settings
-    info!("Syncing Universe Settings...");
-    // Construct patch body
-    let mut universe_patch = serde_json::Map::new();
-    if let Some(name) = &config.universe.name { universe_patch.insert("name".to_string(), name.clone().into()); }
-    if let Some(desc) = &config.universe.description { universe_patch.insert("description".to_string(), desc.clone().into()); }
-    if let Some(genre) = &config.universe.genre { universe_patch.insert("genre".to_string(), genre.clone().into()); }
-    if let Some(devices) = &config.universe.playable_devices { universe_patch.insert("playableDevices".to_string(), serde_json::json!(devices)); }
-    
-    if !universe_patch.is_empty() {
-        if dry_run {
-            info!("Dry Run: Would update universe settings: {:?}", universe_patch);
-        } else {
-            client.update_universe_settings(universe_id, &serde_json::Value::Object(universe_patch)).await?;
-            info!("Universe settings updated.");
+    // Update Universe Settings (requires cookie client)
+    if config.universe.has_settings() {
+        if let Some(ref cookie_client) = cookie_client {
+            sync_universe_settings(universe_id, &config, &mut state, cookie_client, dry_run).await?;
         }
     }
 
@@ -80,9 +56,7 @@ pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClie
 }
 
 pub async fn publish(config: RbxSyncConfig, client: RobloxClient) -> Result<()> {
-    let universe_id = std::env::var("ROBLOX_UNIVERSE_ID")
-        .map_err(|_| anyhow!("ROBLOX_UNIVERSE_ID is required for publish"))?
-        .parse::<u64>()?;
+    let universe_id = config.universe.id;
 
     for place in config.places {
         if place.publish {
@@ -98,6 +72,128 @@ pub async fn publish(config: RbxSyncConfig, client: RobloxClient) -> Result<()> 
             }
         }
     }
+    Ok(())
+}
+
+async fn sync_universe_settings(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, cookie_client: &RobloxCookieClient, dry_run: bool) -> Result<()> {
+    info!("Syncing Universe Settings...");
+    
+    // Build the current desired state from config
+    // Convert private_server_cost to state string for comparison
+    let private_server_cost_state = config.universe.private_server_cost.as_ref().map(|c| match c {
+        PrivateServerCost::Disabled => "disabled".to_string(),
+        PrivateServerCost::Free => "0".to_string(),
+        PrivateServerCost::Paid(cost) => cost.to_string(),
+    });
+    
+    let desired_state = UniverseState {
+        name: config.universe.name.clone(),
+        description: config.universe.description.clone(),
+        genre: config.universe.genre.clone(),
+        playable_devices: config.universe.playable_devices.clone(),
+        max_players: config.universe.max_players,
+        private_server_cost: private_server_cost_state.clone(),
+    };
+    
+    // Check for diffs against stored state
+    let stored_state = state.universe.as_ref();
+    let mut changes: Vec<&str> = Vec::new();
+    
+    if stored_state.map(|s| &s.name) != Some(&desired_state.name) && desired_state.name.is_some() {
+        changes.push("name");
+    }
+    if stored_state.map(|s| &s.description) != Some(&desired_state.description) && desired_state.description.is_some() {
+        changes.push("description");
+    }
+    if stored_state.map(|s| &s.playable_devices) != Some(&desired_state.playable_devices) && desired_state.playable_devices.is_some() {
+        changes.push("playable_devices");
+    }
+    if stored_state.map(|s| &s.private_server_cost) != Some(&desired_state.private_server_cost) && desired_state.private_server_cost.is_some() {
+        changes.push("private_server_cost");
+    }
+    
+    let has_changes = !changes.is_empty();
+    
+    if !has_changes {
+        info!("  [SKIP] Universe Settings - no changes detected");
+        return Ok(());
+    }
+    
+    // Build the request body for develop.roblox.com/v2/universes/{id}/configuration
+    let mut body = serde_json::Map::new();
+    
+    // Add fields that are changing
+    if changes.contains(&"name") {
+        if let Some(name) = &desired_state.name {
+            body.insert("name".to_string(), name.clone().into());
+        }
+    }
+    if changes.contains(&"description") {
+        if let Some(desc) = &desired_state.description {
+            body.insert("description".to_string(), desc.clone().into());
+        }
+    }
+    
+    // Map playable devices to numeric array (1=Computer, 2=Phone, 3=Tablet, 4=Console, 5=VR)
+    if changes.contains(&"playable_devices") {
+        if let Some(devices) = &desired_state.playable_devices {
+            let device_ids: Vec<u8> = devices.iter().filter_map(|d| {
+                match d.to_lowercase().as_str() {
+                    "computer" => Some(1),
+                    "phone" => Some(2),
+                    "tablet" => Some(3),
+                    "console" => Some(4),
+                    "vr" => Some(5),
+                    _ => None,
+                }
+            }).collect();
+            body.insert("playableDevices".to_string(), serde_json::json!(device_ids));
+        }
+    }
+    
+    // Handle private server cost
+    if changes.contains(&"private_server_cost") {
+        if let Some(cost) = &config.universe.private_server_cost {
+            match cost {
+                PrivateServerCost::Disabled => {
+                    body.insert("allowPrivateServers".to_string(), serde_json::json!(false));
+                }
+                PrivateServerCost::Free => {
+                    body.insert("allowPrivateServers".to_string(), serde_json::json!(true));
+                    body.insert("privateServerPrice".to_string(), serde_json::json!(0));
+                }
+                PrivateServerCost::Paid(price) => {
+                    body.insert("allowPrivateServers".to_string(), serde_json::json!(true));
+                    body.insert("privateServerPrice".to_string(), serde_json::json!(price));
+                }
+            }
+        }
+    }
+    
+    if dry_run {
+        info!("  [UPDATE] Universe Settings - would update: {}", changes.join(", "));
+        info!("  Dry Run: Would PATCH to https://develop.roblox.com/v2/universes/{}/configuration", universe_id);
+    } else {
+        info!("  Request URL: https://develop.roblox.com/v2/universes/{}/configuration", universe_id);
+        info!("  Request Body: {}", serde_json::to_string_pretty(&serde_json::Value::Object(body.clone())).unwrap_or_default());
+        let response = cookie_client.update_universe_configuration(universe_id, &serde_json::Value::Object(body)).await?;
+        
+        // Output raw response
+        info!("  Universe API Response: {}", serde_json::to_string_pretty(&response).unwrap_or_else(|_| response.to_string()));
+        
+        // Update state after successful sync
+        state.update_universe(
+            desired_state.name.clone(),
+            desired_state.description.clone(),
+            desired_state.genre.clone(),
+            desired_state.playable_devices.clone(),
+            desired_state.max_players,
+            desired_state.private_server_cost.clone(),
+        );
+        
+        info!("  [UPDATED] Universe Settings - updated: {}", changes.join(", "));
+    }
+    
     Ok(())
 }
 
@@ -152,7 +248,7 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
             if entry.description.as_ref() != pass.description.as_ref() {
                 changes.push("description");
             }
-            if entry.price != pass.price_in_robux.map(|p| p as u64) {
+            if entry.price != pass.price.map(|p| p as u64) {
                 changes.push("price");
             }
             if entry.is_for_sale != pass.is_for_sale {
@@ -206,7 +302,7 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
                 let mut body = serde_json::json!({
                     "name": pass.name,
                     "description": pass.description.clone().unwrap_or_default(),
-                    "price": pass.price_in_robux.unwrap_or(0), 
+                    "price": pass.price.unwrap_or(0), 
                 });
                 if let Some(aid) = asset_id {
                     body["iconAssetId"] = aid.into();
@@ -238,7 +334,7 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
             let mut patch = serde_json::Map::new();
             patch.insert("name".to_string(), pass.name.clone().into());
             if let Some(d) = &pass.description { patch.insert("description".to_string(), d.clone().into()); }
-            if let Some(p) = pass.price_in_robux { patch.insert("price".to_string(), p.into()); }
+            if let Some(p) = pass.price { patch.insert("price".to_string(), p.into()); }
             if let Some(s) = pass.is_for_sale { patch.insert("isForSale".to_string(), s.into()); }
             
             // Read image file if icon changed
@@ -275,7 +371,7 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
                 id,
                 pass.name.clone(), 
                 pass.description.clone(),
-                pass.price_in_robux.map(|p| p as u64),
+                pass.price.map(|p| p as u64),
                 pass.is_for_sale,
                 icon_hash.clone(), 
                 asset_id
@@ -339,7 +435,7 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
             if entry.description.as_ref() != prod.description.as_ref() {
                 changes.push("description");
             }
-            if entry.price != Some(prod.price_in_robux as u64) {
+            if entry.price != Some(prod.price as u64) {
                 changes.push("price");
             }
         }
@@ -388,7 +484,7 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
             } else {
                 let mut body = serde_json::json!({
                     "name": prod.name,
-                    "price": prod.price_in_robux,
+                    "price": prod.price,
                     "description": prod.description.clone().unwrap_or_default(),
                 });
                 if let Some(aid) = asset_id { body["iconAssetId"] = aid.into(); }
@@ -417,7 +513,7 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
         } else if has_changes {
             let mut patch = serde_json::Map::new();
             patch.insert("name".to_string(), prod.name.clone().into());
-            patch.insert("price".to_string(), prod.price_in_robux.into());
+            patch.insert("price".to_string(), prod.price.into());
             if let Some(d) = &prod.description { patch.insert("description".to_string(), d.clone().into()); }
             
             // Read image file if icon changed
@@ -454,7 +550,7 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
                 id,
                 prod.name.clone(), 
                 prod.description.clone(),
-                Some(prod.price_in_robux as u64),
+                Some(prod.price as u64),
                 icon_hash, 
                 asset_id
             );
@@ -720,10 +816,8 @@ async fn ensure_icon(client: &RobloxClient, path: &Path, state: Option<&Resource
     Ok((asset_id, hash))
 }
 
-pub async fn export(client: RobloxClient, output: Option<String>, format_lua: bool) -> Result<()> {
-    let universe_id = std::env::var("ROBLOX_UNIVERSE_ID")
-        .map_err(|_| anyhow!("ROBLOX_UNIVERSE_ID is required for export"))?
-        .parse::<u64>()?;
+pub async fn export(config: RbxSyncConfig, client: RobloxClient, output: Option<String>, format_lua: bool) -> Result<()> {
+    let universe_id = config.universe.id;
 
     info!("Exporting universe {}...", universe_id);
     // Fetch all data

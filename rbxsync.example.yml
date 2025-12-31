@@ -6,6 +6,10 @@ creator:
   id: "12345678"  # User ID or Group ID
   type: "user"    # "user" or "group"
 
+# Payment source for badge creation (costs 100 Robux per badge)
+# Options: "user" (pay from your account) or "group" (pay from group funds)
+badge_payment_source: "user"
+
 universe:
   name: "My Awesome Game"
   description: "Updated via rbxsync!"
@@ -16,20 +20,17 @@ universe:
 game_passes:
   - name: "VIP Pass"
     description: "Exclusive access and perks"
-    price_in_robux: 100
+    price: 100
     icon: "vip.png"
     is_for_sale: true
 
 developer_products:
   - name: "Speed Boost"
     description: "Double speed for 5 minutes"
-    price_in_robux: 50
+    price: 50
     icon: "boost.png"
     is_active: true
 
-# Payment source for badge creation (costs 100 Robux per badge)
-# Options: "user" (pay from your account) or "group" (pay from group funds)
-badge_payment_source: "group"
 
 badges:
   - name: "First Win"

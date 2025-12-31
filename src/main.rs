@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use rbxsync::config::{Config, RbxSyncConfig};
-use rbxsync::api::RobloxClient;
+use rbxsync::api::{RobloxClient, RobloxCookieClient};
 use rbxsync::state::SyncState;
 use rbxsync::commands;
 use log::{info, error};
@@ -101,14 +101,43 @@ async fn main() -> anyhow::Result<()> {
             let root = config_path.parent().unwrap_or(Path::new("."));
             let state = SyncState::load(root)?;
             
-            commands::run(config, state, client, dry_run).await?;
+            // Check if universe settings are defined and require ROBLOX_COOKIE
+            let cookie_client = if config.universe.has_settings() {
+                match &env_config.roblox_cookie {
+                    Some(cookie) => {
+                        info!("Universe settings detected, using cookie authentication for develop.roblox.com API");
+                        Some(RobloxCookieClient::new(cookie.clone()))
+                    }
+                    None => {
+                        error!("Universe settings are defined in {} but ROBLOX_COOKIE is not set.", args.config);
+                        error!("");
+                        error!("To update universe settings (name, description, etc.), you must provide your");
+                        error!(".ROBLOSECURITY cookie. Add the following to your .env file:");
+                        error!("");
+                        error!("  ROBLOX_COOKIE=your_.ROBLOSECURITY_cookie_value_here");
+                        error!("");
+                        error!("To get your .ROBLOSECURITY cookie:");
+                        error!("  1. Log into roblox.com in your browser");
+                        error!("  2. Open Developer Tools (F12) > Application > Cookies");
+                        error!("  3. Copy the value of .ROBLOSECURITY");
+                        error!("");
+                        error!("WARNING: Keep this cookie secret! Anyone with it can access your account.");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                None
+            };
+            
+            commands::run(config, state, client, cookie_client, dry_run).await?;
         }
         Commands::Publish => {
             let config = RbxSyncConfig::load(Path::new(&args.config))?;
             commands::publish(config, client).await?;
         }
         Commands::Export { output, lua } => {
-            commands::export(client, output, lua).await?;
+            let config = RbxSyncConfig::load(Path::new(&args.config))?;
+            commands::export(config, client, output, lua).await?;
         }
         Commands::Validate => unreachable!(), // Handled above
     }

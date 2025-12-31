@@ -1,15 +1,101 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::env;
 use std::fs;
 use std::path::Path;
+
+// --- Private Server Cost ---
+
+/// Represents private server cost configuration
+/// - `Disabled` = private servers are not allowed
+/// - `Free` = private servers are free (cost 0)
+/// - `Paid(u32)` = private servers cost the specified amount in Robux
+#[derive(Debug, Clone, PartialEq)]
+pub enum PrivateServerCost {
+    Disabled,
+    Free,
+    Paid(u32),
+}
+
+impl<'de> Deserialize<'de> for PrivateServerCost {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+        
+        struct PrivateServerCostVisitor;
+        
+        impl<'de> Visitor<'de> for PrivateServerCostVisitor {
+            type Value = PrivateServerCost;
+            
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a number (0 for free, positive for paid) or \"disabled\"")
+            }
+            
+            fn visit_str<E>(self, value: &str) -> std::result::Result<PrivateServerCost, E>
+            where
+                E: de::Error,
+            {
+                match value.to_lowercase().as_str() {
+                    "disabled" => Ok(PrivateServerCost::Disabled),
+                    "free" => Ok(PrivateServerCost::Free),
+                    _ => Err(de::Error::custom(format!(
+                        "invalid private_server_cost: '{}'. Use 'disabled', 0 (free), or a positive number",
+                        value
+                    ))),
+                }
+            }
+            
+            fn visit_u64<E>(self, value: u64) -> std::result::Result<PrivateServerCost, E>
+            where
+                E: de::Error,
+            {
+                if value == 0 {
+                    Ok(PrivateServerCost::Free)
+                } else if value <= u32::MAX as u64 {
+                    Ok(PrivateServerCost::Paid(value as u32))
+                } else {
+                    Err(de::Error::custom("private_server_cost too large"))
+                }
+            }
+            
+            fn visit_i64<E>(self, value: i64) -> std::result::Result<PrivateServerCost, E>
+            where
+                E: de::Error,
+            {
+                if value < 0 {
+                    Err(de::Error::custom("private_server_cost cannot be negative"))
+                } else {
+                    self.visit_u64(value as u64)
+                }
+            }
+        }
+        
+        deserializer.deserialize_any(PrivateServerCostVisitor)
+    }
+}
+
+impl Serialize for PrivateServerCost {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            PrivateServerCost::Disabled => serializer.serialize_str("disabled"),
+            PrivateServerCost::Free => serializer.serialize_u32(0),
+            PrivateServerCost::Paid(cost) => serializer.serialize_u32(*cost),
+        }
+    }
+}
 
 // --- Environment Configuration ---
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub api_key: String,
-    pub universe_id: Option<u64>,
+    /// .ROBLOSECURITY cookie for develop.roblox.com API (required for universe settings)
+    pub roblox_cookie: Option<String>,
 }
 
 impl Config {
@@ -19,13 +105,11 @@ impl Config {
         let api_key = env::var("ROBLOX_API_KEY")
             .context("ROBLOX_API_KEY environment variable not set")?;
 
-        let universe_id = env::var("ROBLOX_UNIVERSE_ID")
-            .ok()
-            .and_then(|s| s.parse().ok());
+        let roblox_cookie = env::var("ROBLOX_COOKIE").ok();
 
         Ok(Self {
             api_key,
-            universe_id,
+            roblox_cookie,
         })
     }
 }
@@ -64,18 +148,34 @@ pub struct CreatorConfig {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct UniverseConfig {
+    /// Universe ID (required)
+    pub id: u64,
     pub name: Option<String>,
     pub description: Option<String>,
     pub genre: Option<String>,
     pub playable_devices: Option<Vec<String>>,
     pub max_players: Option<u32>,
+    /// Private server cost: "disabled", 0 (free), or a positive number (Robux cost)
+    pub private_server_cost: Option<PrivateServerCost>,
+}
+
+impl UniverseConfig {
+    /// Check if any universe settings are defined
+    pub fn has_settings(&self) -> bool {
+        self.name.is_some() 
+            || self.description.is_some() 
+            || self.genre.is_some() 
+            || self.playable_devices.is_some() 
+            || self.max_players.is_some()
+            || self.private_server_cost.is_some()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GamePassConfig {
     pub name: String,
     pub description: Option<String>,
-    pub price_in_robux: Option<u32>,
+    pub price: Option<u32>,
     pub icon: Option<String>,
     pub is_for_sale: Option<bool>,
 }
@@ -84,7 +184,7 @@ pub struct GamePassConfig {
 pub struct DeveloperProductConfig {
     pub name: String,
     pub description: Option<String>,
-    pub price_in_robux: u32,
+    pub price: u32,
     pub icon: Option<String>,
     pub is_active: Option<bool>,
 }

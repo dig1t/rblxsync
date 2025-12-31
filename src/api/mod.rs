@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::{Client, Method, RequestBuilder};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::path::Path;
+use std::sync::RwLock;
 
 const BASE_URL: &str = "https://apis.roblox.com";
 
@@ -54,15 +55,6 @@ impl RobloxClient {
         }
         
         serde_json::from_str(&text).context(format!("Failed to parse response: {}", text))
-    }
-
-    // --- Universe Settings ---
-
-    pub async fn update_universe_settings(&self, universe_id: u64, settings: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/cloud/v2/universes/{}", BASE_URL, universe_id);
-        log::debug!("Making PATCH request to: {}", url);
-        log::debug!("Request body: {}", settings);
-        self.execute(self.request(Method::PATCH, &url).json(settings)).await
     }
 
     // --- Game Passes ---
@@ -435,6 +427,113 @@ impl RobloxClient {
             .send()
             .await?
             .json().await.map_err(|e| anyhow::anyhow!(e))
+    }
+}
+
+/// Client for develop.roblox.com API using .ROBLOSECURITY cookie authentication
+/// This is required for updating universe settings like name and description
+pub struct RobloxCookieClient {
+    client: Client,
+    cookie: String,
+    csrf_token: RwLock<Option<String>>,
+}
+
+impl RobloxCookieClient {
+    pub fn new(cookie: String) -> Self {
+        Self {
+            client: Client::new(),
+            cookie,
+            csrf_token: RwLock::new(None),
+        }
+    }
+
+    /// Make a request with cookie authentication and CSRF token handling
+    async fn request_with_csrf<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<T> {
+        // First attempt
+        let response = self.send_request(method.clone(), url, body).await?;
+        
+        // Check if we got a CSRF token error (403 with x-csrf-token header)
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            // Get the CSRF token from the response header
+            if let Some(token) = response.headers().get("x-csrf-token") {
+                let token_str = token.to_str().unwrap_or_default().to_string();
+                log::debug!("Got CSRF token from 403 response: {}", token_str);
+                
+                // Store the token
+                if let Ok(mut csrf) = self.csrf_token.write() {
+                    *csrf = Some(token_str);
+                }
+                
+                // Retry the request with the token
+                let retry_response = self.send_request(method, url, body).await?;
+                return self.handle_response(retry_response).await;
+            }
+        }
+        
+        self.handle_response(response).await
+    }
+
+    async fn send_request(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<reqwest::Response> {
+        let mut req = self.client
+            .request(method, url)
+            .header("Cookie", format!(".ROBLOSECURITY={}", self.cookie))
+            .header("Content-Type", "application/json");
+        
+        // Add CSRF token if we have one
+        if let Ok(csrf) = self.csrf_token.read() {
+            if let Some(token) = csrf.as_ref() {
+                req = req.header("x-csrf-token", token);
+            }
+        }
+        
+        if let Some(json_body) = body {
+            req = req.json(json_body);
+        }
+        
+        Ok(req.send().await?)
+    }
+
+    async fn handle_response<T: DeserializeOwned>(&self, response: reqwest::Response) -> Result<T> {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        
+        log::debug!("Cookie API response status: {}, body: {}", status, text);
+        
+        if !status.is_success() {
+            return Err(anyhow!("API request failed: {} - {}", status, text));
+        }
+        
+        if text.is_empty() || text.trim().is_empty() {
+            if let Ok(val) = serde_json::from_str::<T>("{}") {
+                return Ok(val);
+            }
+        }
+        
+        serde_json::from_str(&text).context(format!("Failed to parse response: {}", text))
+    }
+
+    /// Update universe configuration via develop.roblox.com API
+    /// Endpoint: PATCH https://develop.roblox.com/v2/universes/{universeId}/configuration
+    pub async fn update_universe_configuration(
+        &self,
+        universe_id: u64,
+        settings: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = format!("https://develop.roblox.com/v2/universes/{}/configuration", universe_id);
+        log::debug!("Making PATCH request to: {}", url);
+        log::debug!("Request body: {}", settings);
+        
+        self.request_with_csrf(Method::PATCH, &url, Some(settings)).await
     }
 }
 

@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct SyncState {
+    /// Universe settings state
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub universe: Option<UniverseState>,
     /// Game passes keyed by their Roblox ID
     #[serde(default)]
     pub game_passes: HashMap<u64, ResourceState>,
@@ -15,6 +18,23 @@ pub struct SyncState {
     /// Badges keyed by their Roblox ID
     #[serde(default)]
     pub badges: HashMap<u64, ResourceState>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq)]
+pub struct UniverseState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playable_devices: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_players: Option<u32>,
+    /// Private server cost state: None = not set, Some("disabled") = disabled, Some("0") = free, Some("X") = paid
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_server_cost: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -58,7 +78,7 @@ impl SyncState {
     }
 
     fn get_state_path(project_root: &Path) -> PathBuf {
-        project_root.join(".rbxsync").join("state.yaml")
+        project_root.join("rbxsync-lock.yml")
     }
 
     /// Find a game pass by name (case-insensitive) and return (id, state)
@@ -140,6 +160,25 @@ impl SyncState {
             is_enabled,
             icon_hash, 
             icon_asset_id 
+        });
+    }
+
+    pub fn update_universe(
+        &mut self,
+        name: Option<String>,
+        description: Option<String>,
+        genre: Option<String>,
+        playable_devices: Option<Vec<String>>,
+        max_players: Option<u32>,
+        private_server_cost: Option<String>,
+    ) {
+        self.universe = Some(UniverseState {
+            name,
+            description,
+            genre,
+            playable_devices,
+            max_players,
+            private_server_cost,
         });
     }
 }
