@@ -1,26 +1,20 @@
 assets_dir: assets/icons/
 
-# Creator configuration for assets
-# This defines who owns the uploaded icons and assets
-creator:
-  id: "12345678"  # User ID or Group ID
-  type: "user"    # "user" or "group"
-
-# If payment is needed to create badges, set to "user" to pay from your account, or "group" to pay from group funds
-badge_payment_source: "user"
-
-# Output path for generated Luau config file
-# After sync, generates a file with all resource IDs for use in-game
+badge_payment_source: "user" # If payment is needed to create badges, set to "user" to pay from your account, or "group" to pay from group funds
 output_path: "src/shared/Config.luau"
 
+creator:
+  id: "12345678" # User ID or Group ID
+  type: "user" # "user" or "group"
+
 universe:
-  id: 123456789  # Your Universe ID (required)
+  id: 123456789 # Your Universe ID (required)
   name: "My Awesome Game"
   description: "Updated via rbxsync!"
   genre: "adventure"
-  playable_devices: ["computer", "phone", "tablet"]  # "computer", "phone", "tablet", "console", "vr"
+  playable_devices: ["computer", "phone", "tablet"] # "computer", "phone", "tablet", "console", "vr"
   max_players: 50
-  private_server_cost: "disabled"  # "disabled", "0" for free, or a number for paid
+  private_server_cost: "disabled" # "disabled" to disable private servers, "0" for free private servers, "100" for paid private servers
 
 game_passes:
   - name: "VIP Pass"
@@ -35,7 +29,6 @@ developer_products:
     price: 50
     icon: "boost.png"
     is_active: true
-
 
 badges:
   - name: "First Win"
