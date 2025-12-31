@@ -10,6 +10,10 @@ creator:
 # Options: "user" (pay from your account) or "group" (pay from group funds)
 badge_payment_source: "user"
 
+# Output path for generated Luau config file
+# After sync, generates a file with all resource IDs for use in-game
+output_path: "src/shared/Config.luau"
+
 universe:
   name: "My Awesome Game"
   description: "Updated via rbxsync!"

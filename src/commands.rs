@@ -1,5 +1,6 @@
 use crate::api::{RobloxClient, RobloxCookieClient};
 use crate::config::{RbxSyncConfig, PrivateServerCost};
+use crate::output;
 use crate::state::{SyncState, ResourceState, UniverseState};
 use anyhow::{anyhow, Result};
 use log::{info, warn, error};
@@ -51,6 +52,16 @@ pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClie
     } else {
         info!("Dry Run: Would save state.");
     }
+
+    // Generate output config file if output_path is specified
+    if let Some(output_path) = &config.output_path {
+        if dry_run {
+            info!("Dry Run: Would generate config file at {}", output_path);
+        } else {
+            output::generate_config(&state, config.universe.id, output_path)?;
+        }
+    }
+
     info!("Sync complete!");
     Ok(())
 }

@@ -16,3 +16,6 @@ assets
 
 # State file (contains local sync state)
 rbxsync-lock.yml
+
+# Generated Luau config files (from output_path option)
+Config.luau

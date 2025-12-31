@@ -133,6 +133,9 @@ pub struct RbxSyncConfig {
     /// Payment source type for badge creation (costs 100 Robux per badge)
     /// Valid values: "user" (pay from user funds) or "group" (pay from group funds)
     pub badge_payment_source: Option<String>,
+    /// Output path for generating Luau config from the lock file after sync
+    /// e.g. "Config.luau" or "src/shared/Config.luau"
+    pub output_path: Option<String>,
 }
 
 fn default_assets_dir() -> String {
