@@ -24,21 +24,22 @@ cargo install --path .
    ```yaml
    assets_dir: assets/icons/
    universe:
+     id: 123456789  # Your Universe ID (required)
      name: "My Awesome Game"
      description: "Managed by rbxsync"
      genre: "Adventure"
      playable_devices: ["Computer", "Phone"]
      max_players: 20
+     private_server_cost: 100  # 0 = free, number = Robux cost, "disabled" = no private servers
    
    game_passes:
      - name: "VIP"
-       price_in_robux: 100
+       price: 100
        icon: "vip.png"
    ```
 
 2. Set your Environment Variables:
    - `ROBLOX_API_KEY`: An Open Cloud API Key with permissions for Universe, Game Passes, Badges, and Assets.
-   - `ROBLOX_UNIVERSE_ID`: The ID of the Universe to sync to.
 
 ## Usage
 
