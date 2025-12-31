@@ -339,9 +339,13 @@ Configure your experience's metadata. The `id` field is **required**; all other 
 | `id` | number | **Yes** | Your Universe ID |
 | `name` | string | No | Display name of the experience |
 | `description` | string | No | Experience description |
+| `genre` | string | No | Genre category (tracked locally, not updatable via API) |
 | `playable_devices` | array | No | List of supported devices |
 | `max_players` | number | No | Maximum players per server |
 | `private_server_cost` | string | No | Private server pricing |
+
+**Valid `genre` values:**
+- `"all"`, `"adventure"`, `"building"`, `"comedy"`, `"fighting"`, `"fps"`, `"horror"`, `"medieval"`, `"military"`, `"naval"`, `"rpg"`, `"scifi"`, `"sports"`, `"townandcity"`, `"western"`
 
 **Valid `playable_devices` values:**
 - `"computer"`, `"phone"`, `"tablet"`, `"console"`, `"vr"`
@@ -356,6 +360,7 @@ universe:
   id: 123456789
   name: "My Awesome Game"
   description: "An epic adventure managed by rbxsync!"
+  genre: "adventure"
   playable_devices: ["computer", "phone", "tablet", "console"]
   max_players: 50
   private_server_cost: "100"  # "disabled", "0" for free, or a number for paid
@@ -520,6 +525,7 @@ universe:
   id: 123456789
   name: "My Awesome Game"
   description: "An epic multiplayer adventure!"
+  genre: "adventure"
   playable_devices: ["computer", "phone", "tablet"]
   max_players: 50
   private_server_cost: "disabled"  # "disabled", "0" for free, or a number for paid
