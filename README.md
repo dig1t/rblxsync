@@ -230,7 +230,7 @@ Create a `rbxsync.yml` file in your project root. Below is a complete reference 
 | `developer_products` | array | No | `[]` | List of Developer Product configurations |
 | `badges` | array | No | `[]` | List of Badge configurations |
 | `places` | array | No | `[]` | List of Place configurations for publishing |
-| `badge_payment_source` | string | No | - | Payment source for badge creation: `"user"` or `"group"` |
+| `badge_payment_source` | string | No | - | If payment is needed to create badges, set to `"user"` to pay from your account or `"group"` to pay from group funds |
 | `output_path` | string | No | - | Path to auto-generate a Luau config file after sync |
 
 ---
@@ -339,31 +339,26 @@ Configure your experience's metadata. The `id` field is **required**; all other 
 | `id` | number | **Yes** | Your Universe ID |
 | `name` | string | No | Display name of the experience |
 | `description` | string | No | Experience description |
-| `genre` | string | No | Genre category (see valid values below) |
 | `playable_devices` | array | No | List of supported devices |
 | `max_players` | number | No | Maximum players per server |
-| `private_server_cost` | number/string | No | Private server pricing |
-
-**Valid `genre` values:**
-- `"All"`, `"Adventure"`, `"Building"`, `"Comedy"`, `"Fighting"`, `"FPS"`, `"Horror"`, `"Medieval"`, `"Military"`, `"Naval"`, `"RPG"`, `"SciFi"`, `"Sports"`, `"TownAndCity"`, `"Western"`
+| `private_server_cost` | string | No | Private server pricing |
 
 **Valid `playable_devices` values:**
-- `"Computer"`, `"Phone"`, `"Tablet"`, `"Console"`, `"VR"`
+- `"computer"`, `"phone"`, `"tablet"`, `"console"`, `"vr"`
 
 **`private_server_cost` options:**
 - `"disabled"` — Private servers are not available
-- `0` or `"free"` — Private servers are free
-- Any positive number — Cost in Robux (e.g., `100`)
+- `"0"` — Free private servers
+- `"100"` (or any number) — Cost in Robux for paid private servers
 
 ```yaml
 universe:
   id: 123456789
   name: "My Awesome Game"
   description: "An epic adventure managed by rbxsync!"
-  genre: "Adventure"
-  playable_devices: ["Computer", "Phone", "Tablet", "Console"]
+  playable_devices: ["computer", "phone", "tablet", "console"]
   max_players: 50
-  private_server_cost: 100  # 100 Robux
+  private_server_cost: "100"  # "disabled", "0" for free, or a number for paid
 ```
 
 > **Note:** Updating universe settings requires the `ROBLOX_COOKIE` environment variable to be set.
@@ -514,7 +509,7 @@ creator:
   id: "12345678"
   type: "user"
 
-# Payment source for badge creation (100 Robux per badge)
+# If payment is needed to create badges, set to "user" to pay from your account, or "group" to pay from group funds
 badge_payment_source: "user"
 
 # Auto-generate Luau config after sync
@@ -525,10 +520,9 @@ universe:
   id: 123456789
   name: "My Awesome Game"
   description: "An epic multiplayer adventure!"
-  genre: "Adventure"
-  playable_devices: ["Computer", "Phone", "Tablet"]
+  playable_devices: ["computer", "phone", "tablet"]
   max_players: 50
-  private_server_cost: 100
+  private_server_cost: "disabled"  # "disabled", "0" for free, or a number for paid
 
 # Game Passes
 game_passes:

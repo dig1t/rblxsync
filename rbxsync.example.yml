@@ -6,8 +6,7 @@ creator:
   id: "12345678"  # User ID or Group ID
   type: "user"    # "user" or "group"
 
-# Payment source for badge creation (costs 100 Robux per badge)
-# Options: "user" (pay from your account) or "group" (pay from group funds)
+# If payment is needed to create badges, set to "user" to pay from your account, or "group" to pay from group funds
 badge_payment_source: "user"
 
 # Output path for generated Luau config file
@@ -15,11 +14,13 @@ badge_payment_source: "user"
 output_path: "src/shared/Config.luau"
 
 universe:
+  id: 123456789  # Your Universe ID (required)
   name: "My Awesome Game"
   description: "Updated via rbxsync!"
-  genre: "Adventure"
-  playable_devices: ["Computer", "Phone", "Tablet"]
+  genre: "adventure"
+  playable_devices: ["computer", "phone", "tablet"]  # "computer", "phone", "tablet", "console", "vr"
   max_players: 50
+  private_server_cost: "disabled"  # "disabled", "0" for free, or a number for paid
 
 game_passes:
   - name: "VIP Pass"
