@@ -1,20 +1,20 @@
 use clap::{Parser, Subcommand};
-use rbxsync::config::{Config, RbxSyncConfig};
-use rbxsync::api::{RobloxClient, RobloxCookieClient};
-use rbxsync::state::SyncState;
-use rbxsync::commands;
+use rblxsync::config::{Config, RblxSyncConfig};
+use rblxsync::api::{RobloxClient, RobloxCookieClient};
+use rblxsync::state::SyncState;
+use rblxsync::commands;
 use log::{info, error};
 use std::path::Path;
 
 #[derive(Parser)]
-#[command(name = "rbxsync")]
+#[command(name = "rblxsync")]
 #[command(about = "Manage Roblox experience metadata via Open Cloud", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
     /// Path to config file
-    #[arg(short, long, default_value = "rbxsync.yml")]
+    #[arg(short, long, default_value = "rblxsync.yml")]
     config: String,
 }
 
@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
                 error!("Config file not found: {}", args.config);
                 std::process::exit(1);
             }
-            match RbxSyncConfig::load(path) {
+            match RblxSyncConfig::load(path) {
                 Ok(config) => {
                     // Run additional validation checks
                     if let Err(e) = commands::validate(&config) {
@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
                 info!("Dry-run mode enabled.");
             }
             let config_path = Path::new(&args.config);
-            let config = RbxSyncConfig::load(config_path)?;
+            let config = RblxSyncConfig::load(config_path)?;
             let root = config_path.parent().unwrap_or(Path::new("."));
             let state = SyncState::load(root)?;
             
@@ -132,11 +132,11 @@ async fn main() -> anyhow::Result<()> {
             commands::run(config, state, client, cookie_client, dry_run).await?;
         }
         Commands::Publish => {
-            let config = RbxSyncConfig::load(Path::new(&args.config))?;
+            let config = RblxSyncConfig::load(Path::new(&args.config))?;
             commands::publish(config, client).await?;
         }
         Commands::Export { output, lua } => {
-            let config = RbxSyncConfig::load(Path::new(&args.config))?;
+            let config = RblxSyncConfig::load(Path::new(&args.config))?;
             commands::export(config, client, output, lua).await?;
         }
         Commands::Validate => unreachable!(), // Handled above

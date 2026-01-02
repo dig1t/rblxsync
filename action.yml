@@ -1,4 +1,4 @@
-name: 'rbxsync'
+name: 'rblxsync'
 description: 'Declaratively manage Roblox experience metadata via Open Cloud API'
 branding:
   icon: 'upload-cloud'
@@ -13,9 +13,9 @@ inputs:
     required: false
     default: 'run'
   config:
-    description: 'Path to rbxsync.yml config file'
+    description: 'Path to rblxsync.yml config file'
     required: false
-    default: 'rbxsync.yml'
+    default: 'rblxsync.yml'
   args:
     description: 'Additional arguments (e.g., --dry-run for run command)'
     required: false
@@ -28,11 +28,11 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Checkout rbxsync
+    - name: Checkout rblxsync
       uses: actions/checkout@v4
       with:
-        repository: dig1t/rbxsync
-        path: .rbxsync-action
+        repository: dig1t/rblxsync
+        path: .rblxsync-action
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
@@ -45,21 +45,21 @@ runs:
           ~/.cargo/registry/index/
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
-          .rbxsync-action/target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('.rbxsync-action/Cargo.lock') }}
+          .rblxsync-action/target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('.rblxsync-action/Cargo.lock') }}
         restore-keys: |
           ${{ runner.os }}-cargo-
 
-    - name: Build rbxsync
+    - name: Build rblxsync
       shell: bash
-      working-directory: .rbxsync-action
+      working-directory: .rblxsync-action
       run: cargo build --release
 
-    - name: Run rbxsync
+    - name: Run rblxsync
       shell: bash
       env:
         ROBLOX_API_KEY: ${{ inputs.api_key }}
         ROBLOX_COOKIE: ${{ inputs.roblox_cookie }}
       run: |
-        .rbxsync-action/target/release/rbxsync ${{ inputs.command }} --config ${{ inputs.config }} ${{ inputs.args }}
+        .rblxsync-action/target/release/rblxsync ${{ inputs.command }} --config ${{ inputs.config }} ${{ inputs.args }}
 
