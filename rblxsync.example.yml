@@ -10,7 +10,7 @@ creator:
 universe:
   id: 123456789 # Your Universe ID (required)
   name: "My Awesome Game"
-  description: "Updated via rbxsync!"
+  description: "Updated via rblxsync!"
   genre: "adventure"
   playable_devices: ["computer", "phone", "tablet"] # "computer", "phone", "tablet", "console", "vr"
   max_players: 50

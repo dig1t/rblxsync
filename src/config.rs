@@ -117,7 +117,7 @@ impl Config {
 // --- YAML Configuration ---
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct RbxSyncConfig {
+pub struct RblxSyncConfig {
     #[serde(default = "default_assets_dir")]
     pub assets_dir: String,
     pub creator: Option<CreatorConfig>,
@@ -208,11 +208,11 @@ pub struct PlaceConfig {
     pub publish: bool,
 }
 
-impl RbxSyncConfig {
+impl RblxSyncConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file at {:?}", path))?;
-        let config: RbxSyncConfig = serde_yaml::from_str(&content)
+        let config: RblxSyncConfig = serde_yaml::from_str(&content)
             .context("Failed to parse config file")?;
         Ok(config)
     }

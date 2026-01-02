@@ -78,7 +78,7 @@ impl SyncState {
     }
 
     fn get_state_path(project_root: &Path) -> PathBuf {
-        project_root.join("rbxsync-lock.yml")
+        project_root.join("rblxsync-lock.yml")
     }
 
     /// Find a game pass by name (case-insensitive) and return (id, state)

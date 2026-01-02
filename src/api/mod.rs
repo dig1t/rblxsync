@@ -272,7 +272,7 @@ impl RobloxClient {
         let request = WebAssetRequest {
             asset_type: "Image".to_string(),
             display_name: name.to_string(),
-            description: format!("Uploaded by rbxsync from {}", filename),
+            description: format!("Uploaded by rblxsync from {}", filename),
             creation_context: WebAssetRequestCreationContext {
                 creator: creator_web,
                 expected_price: None, // Not used for image assets
