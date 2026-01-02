@@ -1,10 +1,10 @@
-# rbxsync
+# rblxsync
 
-`rbxsync` is a Rust-based CLI tool and GitHub Action for declaratively managing Roblox experience metadata via the Open Cloud API. It allows you to define your Universe settings, Game Passes, Developer Products, Badges, and Places in a YAML configuration file and sync them to Roblox with a single command.
+`rblxsync` is a Rust-based CLI tool and GitHub Action for declaratively managing Roblox experience metadata via the Open Cloud API. It allows you to define your Universe settings, Game Passes, Developer Products, Badges, and Places in a YAML configuration file and sync them to Roblox with a single command.
 
 ## Features
 
-- **Declarative Configuration**: Manage all your game metadata in `rbxsync.yml`.
+- **Declarative Configuration**: Manage all your game metadata in `rblxsync.yml`.
 - **Idempotent Sync**: Only updates resources that have changed. Matches by name.
 - **Icon Management**: Automatically uploads icons for Game Passes, Products, and Badges if the local file changes (checksum verification).
 - **Place Publishing**: Publish `.rbxl` files to specific Place IDs.
@@ -16,17 +16,17 @@
 
 ### Rokit (Recommended)
 
-[Rokit](https://github.com/rojo-rbx/rokit) is the recommended way to install `rbxsync`:
+[Rokit](https://github.com/rojo-rbx/rokit) is the recommended way to install `rblxsync`:
 
 ```bash
-rokit add dig1t/rbxsync
+rokit add dig1t/rblxsync
 ```
 
 Or add it manually to your `rokit.toml`:
 
 ```toml
 [tools]
-rbxsync = "dig1t/rbxsync@0.1.0"
+rblxsync = "dig1t/rblxsync@0.1.0"
 ```
 
 ### Aftman
@@ -35,7 +35,7 @@ Add to your `aftman.toml`:
 
 ```toml
 [tools]
-rbxsync = "dig1t/rbxsync@0.1.0"
+rblxsync = "dig1t/rblxsync@0.1.0"
 ```
 
 Then run:
@@ -50,7 +50,7 @@ Add to your `foreman.toml`:
 
 ```toml
 [tools]
-rbxsync = { github = "dig1t/rbxsync", version = "0.1.0" }
+rblxsync = { github = "dig1t/rblxsync", version = "0.1.0" }
 ```
 
 Then run:
@@ -69,13 +69,13 @@ cargo install --path .
 
 ### GitHub Releases
 
-Download pre-built binaries from the [Releases](https://github.com/dig1t/rbxsync/releases) page.
+Download pre-built binaries from the [Releases](https://github.com/dig1t/rblxsync/releases) page.
 
 ---
 
 ## GitHub Action
 
-Use `rbxsync` directly in your GitHub Actions workflows for automated deployments.
+Use `rblxsync` directly in your GitHub Actions workflows for automated deployments.
 
 ### Basic Usage
 
@@ -93,7 +93,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync Roblox metadata
-        uses: dig1t/rbxsync@v1
+        uses: dig1t/rblxsync@v1
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
 ```
@@ -104,7 +104,7 @@ jobs:
 |-------|----------|---------|-------------|
 | `api_key` | **Yes** | - | Roblox Open Cloud API Key |
 | `command` | No | `run` | Command to run: `run`, `publish`, `validate`, or `export` |
-| `config` | No | `rbxsync.yml` | Path to config file |
+| `config` | No | `rblxsync.yml` | Path to config file |
 | `args` | No | - | Additional arguments (e.g., `--dry-run`) |
 | `roblox_cookie` | No | - | `.ROBLOSECURITY` cookie (required for universe settings) |
 
@@ -126,13 +126,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync metadata
-        uses: dig1t/rbxsync@v1
+        uses: dig1t/rblxsync@v1
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run
 
       - name: Publish places
-        uses: dig1t/rbxsync@v1
+        uses: dig1t/rblxsync@v1
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: publish
@@ -142,7 +142,7 @@ jobs:
 
 ```yaml
 - name: Sync with universe settings
-  uses: dig1t/rbxsync@v1
+  uses: dig1t/rblxsync@v1
   with:
     api_key: ${{ secrets.ROBLOX_API_KEY }}
     roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
@@ -165,7 +165,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Preview sync changes
-        uses: dig1t/rbxsync@v1
+        uses: dig1t/rblxsync@v1
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run
@@ -175,8 +175,8 @@ jobs:
 #### Validate Config
 
 ```yaml
-- name: Validate rbxsync config
-  uses: dig1t/rbxsync@v1
+- name: Validate rblxsync config
+  uses: dig1t/rblxsync@v1
   with:
     api_key: ${{ secrets.ROBLOX_API_KEY }}
     command: validate
@@ -186,7 +186,7 @@ jobs:
 
 ```yaml
 - name: Sync production config
-  uses: dig1t/rbxsync@v1
+  uses: dig1t/rblxsync@v1
   with:
     api_key: ${{ secrets.ROBLOX_API_KEY }}
     config: config/production.yml
@@ -217,7 +217,7 @@ ROBLOX_COOKIE=your_roblosecurity_cookie_here
 
 ## Configuration Reference
 
-Create a `rbxsync.yml` file in your project root. Below is a complete reference of all available options.
+Create a `rblxsync.yml` file in your project root. Below is a complete reference of all available options.
 
 ### Top-Level Settings
 
@@ -282,12 +282,12 @@ Automatically generates a type-safe Luau module containing all your resource IDs
 output_path: "src/shared/Config.luau"
 ```
 
-After running `rbxsync run`, a file like this is generated:
+After running `rblxsync run`, a file like this is generated:
 
 ```luau
 --!strict
--- Auto-generated by rbxsync. Do not edit manually.
--- This file is regenerated each time `rbxsync run` completes.
+-- Auto-generated by rblxsync. Do not edit manually.
+-- This file is regenerated each time `rblxsync run` completes.
 
 export type Universe = {
     Id: number,
@@ -359,7 +359,7 @@ Configure your experience's metadata. The `id` field is **required**; all other 
 universe:
   id: 123456789
   name: "My Awesome Game"
-  description: "An epic adventure managed by rbxsync!"
+  description: "An epic adventure managed by rblxsync!"
   genre: "adventure"
   playable_devices: ["computer", "phone", "tablet", "console"]
   max_players: 50
@@ -476,7 +476,7 @@ badges:
 
 ### `places` — Place Publishing Configuration
 
-Define places to publish when running `rbxsync publish`.
+Define places to publish when running `rblxsync publish`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -503,7 +503,7 @@ places:
 
 ## Complete Example
 
-Here's a full `rbxsync.yml` example with all features:
+Here's a full `rblxsync.yml` example with all features:
 
 ```yaml
 # Directory for icon files
@@ -584,46 +584,46 @@ places:
 ### Sync (Default)
 Syncs universe settings and all assets (game passes, products, badges):
 ```bash
-rbxsync
+rblxsync
 # OR
-rbxsync run
+rblxsync run
 ```
 
 Use `--dry-run` to preview changes without applying them:
 ```bash
-rbxsync run --dry-run
+rblxsync run --dry-run
 ```
 
 ### Publish Places
 Publishes `.rbxl` files defined in the `places` section:
 ```bash
-rbxsync publish
+rblxsync publish
 ```
 
 ### Export
 Fetch existing resources from Roblox and generate a Luau/Lua config file (useful for migration):
 ```bash
 # Export as Luau (default)
-rbxsync export --output Config.luau
+rblxsync export --output Config.luau
 
 # Export as Lua
-rbxsync export --output Config.lua --lua
+rblxsync export --output Config.lua --lua
 
 # Custom output path
-rbxsync export --output src/shared/GameConfig.luau
+rblxsync export --output src/shared/GameConfig.luau
 ```
 
 ### Validate
-Check if your `rbxsync.yml` is valid:
+Check if your `rblxsync.yml` is valid:
 ```bash
-rbxsync validate
+rblxsync validate
 ```
 
 ### Custom Config Path
 Use a different config file:
 ```bash
-rbxsync --config my-config.yml run
-rbxsync -c production.yml publish
+rblxsync --config my-config.yml run
+rblxsync -c production.yml publish
 ```
 
 ---
@@ -645,7 +645,7 @@ Ensure your API Key has the following permissions:
 
 ## Lock File
 
-`rbxsync` maintains a `rbxsync-lock.yml` file that tracks:
+`rblxsync` maintains a `rblxsync-lock.yml` file that tracks:
 - Resource IDs (Game Pass IDs, Product IDs, Badge IDs)
 - Icon file hashes (for change detection)
 - Universe settings state

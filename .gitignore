@@ -11,11 +11,11 @@ target/
 
 # User-specific environment variables
 .env
-rbxsync.yml
+rblxsync.yml
 assets
 
 # State file (contains local sync state)
-rbxsync-lock.yml
+rblxsync-lock.yml
 
 # Generated Luau config files (from output_path option)
 Config.luau

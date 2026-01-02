@@ -1,5 +1,5 @@
 use crate::api::{RobloxClient, RobloxCookieClient};
-use crate::config::{RbxSyncConfig, PrivateServerCost};
+use crate::config::{RblxSyncConfig, PrivateServerCost};
 use crate::output;
 use crate::state::{SyncState, ResourceState, UniverseState};
 use anyhow::{anyhow, Result};
@@ -9,7 +9,7 @@ use std::path::Path;
 use std::collections::{HashMap, HashSet};
 
 /// Validate the configuration for errors (including case-insensitive duplicate names)
-pub fn validate(config: &RbxSyncConfig) -> Result<()> {
+pub fn validate(config: &RblxSyncConfig) -> Result<()> {
     // Check for duplicate game pass names (case-insensitive)
     let game_pass_names: Vec<&str> = config.game_passes.iter().map(|p| p.name.as_str()).collect();
     check_for_duplicates(&game_pass_names, "game pass")?;
@@ -25,7 +25,7 @@ pub fn validate(config: &RbxSyncConfig) -> Result<()> {
     Ok(())
 }
 
-pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClient, cookie_client: Option<RobloxCookieClient>, dry_run: bool) -> Result<()> {
+pub async fn run(config: RblxSyncConfig, mut state: SyncState, client: RobloxClient, cookie_client: Option<RobloxCookieClient>, dry_run: bool) -> Result<()> {
     info!("Starting sync... (dry_run: {})", dry_run);
 
     // Validate config before proceeding
@@ -66,7 +66,7 @@ pub async fn run(config: RbxSyncConfig, mut state: SyncState, client: RobloxClie
     Ok(())
 }
 
-pub async fn publish(config: RbxSyncConfig, client: RobloxClient) -> Result<()> {
+pub async fn publish(config: RblxSyncConfig, client: RobloxClient) -> Result<()> {
     let universe_id = config.universe.id;
 
     for place in config.places {
@@ -86,7 +86,7 @@ pub async fn publish(config: RbxSyncConfig, client: RobloxClient) -> Result<()> 
     Ok(())
 }
 
-async fn sync_universe_settings(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, cookie_client: &RobloxCookieClient, dry_run: bool) -> Result<()> {
+async fn sync_universe_settings(universe_id: u64, config: &RblxSyncConfig, state: &mut SyncState, cookie_client: &RobloxCookieClient, dry_run: bool) -> Result<()> {
     info!("Syncing Universe Settings...");
     
     // Build the current desired state from config
@@ -208,7 +208,7 @@ async fn sync_universe_settings(universe_id: u64, config: &RbxSyncConfig, state:
     Ok(())
 }
 
-async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
+async fn sync_game_passes(universe_id: u64, config: &RblxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Game Passes...");
     
     let mut created_count = 0;
@@ -395,7 +395,7 @@ async fn sync_game_passes(universe_id: u64, config: &RbxSyncConfig, state: &mut 
     Ok(())
 }
 
-async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
+async fn sync_developer_products(universe_id: u64, config: &RblxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Developer Products...");
     
     let mut created_count = 0;
@@ -573,7 +573,7 @@ async fn sync_developer_products(universe_id: u64, config: &RbxSyncConfig, state
     Ok(())
 }
 
-async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
+async fn sync_badges(universe_id: u64, config: &RblxSyncConfig, state: &mut SyncState, client: &RobloxClient, dry_run: bool) -> Result<()> {
     info!("Syncing Badges...");
     
     let mut created_count = 0;
@@ -686,7 +686,7 @@ async fn sync_badges(universe_id: u64, config: &RbxSyncConfig, state: &mut SyncS
                         if err_str.contains("Payment source is invalid") || err_str.contains("code\":16") {
                             error!("Badge creation failed: Payment source is required.");
                             error!("");
-                            error!("Creating badges costs 100 Robux. Please add the following to your rbxsync.yml:");
+                            error!("Creating badges costs 100 Robux. Please add the following to your rblxsync.yml:");
                             error!("");
                             error!("  badge_payment_source: \"user\"   # Pay from your user account");
                             error!("  # OR");
@@ -827,7 +827,7 @@ async fn ensure_icon(client: &RobloxClient, path: &Path, state: Option<&Resource
     Ok((asset_id, hash))
 }
 
-pub async fn export(config: RbxSyncConfig, client: RobloxClient, output: Option<String>, format_lua: bool) -> Result<()> {
+pub async fn export(config: RblxSyncConfig, client: RobloxClient, output: Option<String>, format_lua: bool) -> Result<()> {
     let universe_id = config.universe.id;
 
     info!("Exporting universe {}...", universe_id);
