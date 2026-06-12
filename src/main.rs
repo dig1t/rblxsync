@@ -35,7 +35,8 @@ enum Commands {
         /// Output file path
         #[arg(short, long)]
         output: Option<String>,
-        /// Export as Lua instead of Luau
+        /// Use a .lua output extension instead of .luau (only changes the default
+        /// filename; the generated content is identical and valid Lua/Luau)
         #[arg(long)]
         lua: bool,
     },
@@ -53,30 +54,27 @@ async fn main() -> anyhow::Result<()> {
 
     let command = args.command.unwrap_or(Commands::Run { dry_run: false });
 
-    match command {
-        Commands::Validate => {
-            let path = Path::new(&args.config);
-            if !path.exists() {
-                error!("Config file not found: {}", args.config);
-                std::process::exit(1);
-            }
-            match RblxSyncConfig::load(path) {
-                Ok(config) => {
-                    // Run additional validation checks
-                    if let Err(e) = commands::validate(&config) {
-                        error!("Config validation failed: {}", e);
-                        std::process::exit(1);
-                    }
-                    info!("Config file is valid.");
-                }
-                Err(e) => {
+    if let Commands::Validate = command {
+        let path = Path::new(&args.config);
+        if !path.exists() {
+            error!("Config file not found: {}", args.config);
+            std::process::exit(1);
+        }
+        match RblxSyncConfig::load(path) {
+            Ok(config) => {
+                // Run additional validation checks
+                if let Err(e) = commands::validate(&config) {
                     error!("Config validation failed: {}", e);
                     std::process::exit(1);
                 }
+                info!("Config file is valid.");
             }
-            return Ok(());
+            Err(e) => {
+                error!("Config validation failed: {}", e);
+                std::process::exit(1);
+            }
         }
-        _ => {}
+        return Ok(());
     }
 
     // Load Env Config (API Key)

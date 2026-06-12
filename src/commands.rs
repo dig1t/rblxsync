@@ -123,13 +123,41 @@ async fn sync_universe_settings(universe_id: u64, config: &RblxSyncConfig, state
         changes.push("private_server_cost");
     }
     
+    // genre and max_players are tracked locally only. They are not PATCHable via the
+    // develop.roblox.com configuration endpoint (genre is documented as not updatable via
+    // API; max_players is a per-place setting, not a universe configuration field), so they
+    // must never trigger a sync on their own. We still persist them in state below.
+    let stored_genre = stored_state.and_then(|s| s.genre.as_ref());
+    let stored_max_players = stored_state.and_then(|s| s.max_players);
+    let tracked_local_changed = (desired_state.genre.is_some() && stored_genre != desired_state.genre.as_ref())
+        || (desired_state.max_players.is_some() && stored_max_players != desired_state.max_players);
+
+    // Snapshot stored values as owned so they can be used after `state` is mutably borrowed.
+    let stored_name = stored_state.and_then(|s| s.name.clone());
+    let stored_description = stored_state.and_then(|s| s.description.clone());
+    let stored_genre_owned = stored_state.and_then(|s| s.genre.clone());
+    let stored_playable_devices = stored_state.and_then(|s| s.playable_devices.clone());
+    let stored_max_players_owned = stored_state.and_then(|s| s.max_players);
+    let stored_private_server_cost = stored_state.and_then(|s| s.private_server_cost.clone());
+
     let has_changes = !changes.is_empty();
-    
+
     if !has_changes {
-        info!("  [SKIP] Universe Settings - no changes detected");
+        info!("  [SKIP] Universe Settings - no API-updatable changes detected");
+        if tracked_local_changed && !dry_run {
+            info!("  [LOCAL] Universe genre/max_players are tracked locally only (not updatable via API) - recording in state");
+            state.update_universe(
+                stored_name.clone(),
+                stored_description.clone(),
+                desired_state.genre.clone().or_else(|| stored_genre_owned.clone()),
+                stored_playable_devices.clone(),
+                desired_state.max_players.or(stored_max_players_owned),
+                stored_private_server_cost.clone(),
+            );
+        }
         return Ok(());
     }
-    
+
     // Build the request body for develop.roblox.com/v2/universes/{id}/configuration
     let mut body = serde_json::Map::new();
     
@@ -192,14 +220,16 @@ async fn sync_universe_settings(universe_id: u64, config: &RblxSyncConfig, state
         // Output raw response
         info!("  Universe API Response: {}", serde_json::to_string_pretty(&response).unwrap_or_else(|_| response.to_string()));
         
-        // Update state after successful sync
+        // Update state after successful sync. Only persist fields that were actually applied
+        // (present in `changes`); for everything else, retain the previously stored value.
+        // genre and max_players are tracked locally only, so carry the desired value when set.
         state.update_universe(
-            desired_state.name.clone(),
-            desired_state.description.clone(),
-            desired_state.genre.clone(),
-            desired_state.playable_devices.clone(),
-            desired_state.max_players,
-            desired_state.private_server_cost.clone(),
+            if changes.contains(&"name") { desired_state.name.clone() } else { stored_name.clone() },
+            if changes.contains(&"description") { desired_state.description.clone() } else { stored_description.clone() },
+            desired_state.genre.clone().or_else(|| stored_genre_owned.clone()),
+            if changes.contains(&"playable_devices") { desired_state.playable_devices.clone() } else { stored_playable_devices.clone() },
+            desired_state.max_players.or(stored_max_players_owned),
+            if changes.contains(&"private_server_cost") { desired_state.private_server_cost.clone() } else { stored_private_server_cost.clone() },
         );
         
         info!("  [UPDATED] Universe Settings - updated: {}", changes.join(", "));
@@ -265,6 +295,13 @@ async fn sync_game_passes(universe_id: u64, config: &RblxSyncConfig, state: &mut
             if entry.is_for_sale != pass.is_for_sale {
                 changes.push("is_for_sale");
             }
+        } else if remote_map.contains_key(&pass.name.to_lowercase()) {
+            // Adopting a pre-existing remote resource with no state entry: we cannot know the
+            // remote values, so reconcile by treating all configured fields as changes.
+            changes.push("name");
+            if pass.description.is_some() { changes.push("description"); }
+            if pass.price.is_some() { changes.push("price"); }
+            if pass.is_for_sale.is_some() { changes.push("is_for_sale"); }
         }
 
         // Handle Icon - calculate hash and check for changes
@@ -302,31 +339,29 @@ async fn sync_game_passes(universe_id: u64, config: &RblxSyncConfig, state: &mut
             sid
         } else if let Some((_, rid)) = remote_entry {
             *rid
+        } else if dry_run {
+            info!("  [CREATE] Game Pass '{}' - would create with: name, description, price{}",
+                pass.name,
+                if pass.icon.is_some() { ", icon" } else { "" });
+            created_count += 1;
+            0
         } else {
-            if dry_run {
-                info!("  [CREATE] Game Pass '{}' - would create with: name, description, price{}", 
-                    pass.name, 
-                    if pass.icon.is_some() { ", icon" } else { "" });
-                created_count += 1;
-                0
-            } else {
-                let mut body = serde_json::json!({
-                    "name": pass.name,
-                    "description": pass.description.clone().unwrap_or_default(),
-                    "price": pass.price.unwrap_or(0), 
-                });
-                if let Some(aid) = asset_id {
-                    body["iconAssetId"] = aid.into();
-                }
-                
-                let resp = client.create_game_pass(universe_id, &body).await?;
-                let new_id = resp["id"].as_u64().ok_or(anyhow!("Created game pass has no ID"))?;
-                info!("  [CREATED] Game Pass '{}' (ID: {}) - created with: name, description, price{}", 
-                    pass.name, new_id,
-                    if pass.icon.is_some() { ", icon" } else { "" });
-                created_count += 1;
-                new_id
+            let mut body = serde_json::json!({
+                "name": pass.name,
+                "description": pass.description.clone().unwrap_or_default(),
+                "price": pass.price.unwrap_or(0),
+            });
+            if let Some(aid) = asset_id {
+                body["iconAssetId"] = aid.into();
             }
+
+            let resp = client.create_game_pass(universe_id, &body).await?;
+            let new_id = resp["id"].as_u64().ok_or(anyhow!("Created game pass has no ID"))?;
+            info!("  [CREATED] Game Pass '{}' (ID: {}) - created with: name, description, price{}",
+                pass.name, new_id,
+                if pass.icon.is_some() { ", icon" } else { "" });
+            created_count += 1;
+            new_id
         };
 
         // Update Remote (Idempotent PATCH) - only if newly created or has changes
@@ -449,6 +484,12 @@ async fn sync_developer_products(universe_id: u64, config: &RblxSyncConfig, stat
             if entry.price != Some(prod.price as u64) {
                 changes.push("price");
             }
+        } else if remote_map.contains_key(&prod.name.to_lowercase()) {
+            // Adopting a pre-existing remote resource with no state entry: reconcile all
+            // configured fields with a single PATCH since remote values are unknown.
+            changes.push("name");
+            changes.push("price");
+            if prod.description.is_some() { changes.push("description"); }
         }
 
         if let Some(icon_path_str) = &prod.icon {
@@ -485,28 +526,26 @@ async fn sync_developer_products(universe_id: u64, config: &RblxSyncConfig, stat
             sid
         } else if let Some((_, rid)) = remote_entry {
             *rid
+        } else if dry_run {
+            info!("  [CREATE] Developer Product '{}' - would create with: name, price, description{}",
+                prod.name,
+                if prod.icon.is_some() { ", icon" } else { "" });
+            created_count += 1;
+            0
         } else {
-            if dry_run {
-                info!("  [CREATE] Developer Product '{}' - would create with: name, price, description{}", 
-                    prod.name,
-                    if prod.icon.is_some() { ", icon" } else { "" });
-                created_count += 1;
-                0
-            } else {
-                let mut body = serde_json::json!({
-                    "name": prod.name,
-                    "price": prod.price,
-                    "description": prod.description.clone().unwrap_or_default(),
-                });
-                if let Some(aid) = asset_id { body["iconAssetId"] = aid.into(); }
-                let resp = client.create_developer_product(universe_id, &body).await?;
-                let new_id = resp["id"].as_u64().ok_or(anyhow!("Created product has no ID"))?;
-                info!("  [CREATED] Developer Product '{}' (ID: {}) - created with: name, price, description{}", 
-                    prod.name, new_id,
-                    if prod.icon.is_some() { ", icon" } else { "" });
-                created_count += 1;
-                new_id
-            }
+            let mut body = serde_json::json!({
+                "name": prod.name,
+                "price": prod.price,
+                "description": prod.description.clone().unwrap_or_default(),
+            });
+            if let Some(aid) = asset_id { body["iconAssetId"] = aid.into(); }
+            let resp = client.create_developer_product(universe_id, &body).await?;
+            let new_id = resp["id"].as_u64().ok_or(anyhow!("Created product has no ID"))?;
+            info!("  [CREATED] Developer Product '{}' (ID: {}) - created with: name, price, description{}",
+                prod.name, new_id,
+                if prod.icon.is_some() { ", icon" } else { "" });
+            created_count += 1;
+            new_id
         };
 
         // Update Remote (Idempotent PATCH) - only if has changes
@@ -616,6 +655,12 @@ async fn sync_badges(universe_id: u64, config: &RblxSyncConfig, state: &mut Sync
             if entry.is_enabled != badge.is_enabled {
                 changes.push("is_enabled");
             }
+        } else if remote_map.contains_key(&badge.name.to_lowercase()) {
+            // Adopting a pre-existing remote resource with no state entry: reconcile all
+            // configured fields with a single PATCH since remote values are unknown.
+            changes.push("name");
+            if badge.description.is_some() { changes.push("description"); }
+            if badge.is_enabled.is_some() { changes.push("is_enabled"); }
         }
         
         // Prepare icon data if provided
@@ -661,50 +706,48 @@ async fn sync_badges(universe_id: u64, config: &RblxSyncConfig, state: &mut Sync
             sid
         } else if let Some((_, rid)) = remote_entry {
             *rid
+        } else if dry_run {
+            info!("  [CREATE] Badge '{}' - would create with: name, description{}",
+                badge.name,
+                if badge.icon.is_some() { ", icon" } else { "" });
+            created_count += 1;
+            0
         } else {
-            if dry_run {
-                info!("  [CREATE] Badge '{}' - would create with: name, description{}", 
-                    badge.name,
-                    if badge.icon.is_some() { ", icon" } else { "" });
-                created_count += 1;
-                0
-            } else {
-                let image_for_create = icon_data.as_ref().map(|(data, filename, _)| (data.clone(), filename.clone()));
-                
-                let result = client.create_badge(
-                    universe_id,
-                    &badge.name,
-                    badge.description.as_deref().unwrap_or(""),
-                    image_for_create,
-                    config.badge_payment_source.as_deref()
-                ).await;
-                
-                let resp = match result {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let err_str = e.to_string();
-                        if err_str.contains("Payment source is invalid") || err_str.contains("code\":16") {
-                            error!("Badge creation failed: Payment source is required.");
-                            error!("");
-                            error!("Creating badges costs 100 Robux. Please add the following to your rblxsync.yml:");
-                            error!("");
-                            error!("  badge_payment_source: \"user\"   # Pay from your user account");
-                            error!("  # OR");
-                            error!("  badge_payment_source: \"group\"  # Pay from group funds");
-                            error!("");
-                            return Err(anyhow!("Badge creation requires badge_payment_source configuration"));
-                        }
-                        return Err(e);
+            let image_for_create = icon_data.as_ref().map(|(data, filename, _)| (data.clone(), filename.clone()));
+
+            let result = client.create_badge(
+                universe_id,
+                &badge.name,
+                badge.description.as_deref().unwrap_or(""),
+                image_for_create,
+                config.badge_payment_source.as_deref()
+            ).await;
+
+            let resp = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("Payment source is invalid") || err_str.contains("code\":16") {
+                        error!("Badge creation failed: Payment source is required.");
+                        error!("");
+                        error!("Creating badges costs 100 Robux. Please add the following to your rblxsync.yml:");
+                        error!("");
+                        error!("  badge_payment_source: \"user\"   # Pay from your user account");
+                        error!("  # OR");
+                        error!("  badge_payment_source: \"group\"  # Pay from group funds");
+                        error!("");
+                        return Err(anyhow!("Badge creation requires badge_payment_source configuration"));
                     }
-                };
-                
-                let new_id = resp["id"].as_u64().ok_or(anyhow!("Created badge has no ID"))?;
-                info!("  [CREATED] Badge '{}' (ID: {}) - created with: name, description{}", 
-                    badge.name, new_id,
-                    if badge.icon.is_some() { ", icon" } else { "" });
-                created_count += 1;
-                new_id
-            }
+                    return Err(e);
+                }
+            };
+
+            let new_id = resp["id"].as_u64().ok_or(anyhow!("Created badge has no ID"))?;
+            info!("  [CREATED] Badge '{}' (ID: {}) - created with: name, description{}",
+                badge.name, new_id,
+                if badge.icon.is_some() { ", icon" } else { "" });
+            created_count += 1;
+            new_id
         };
 
         // Update state with icon hash
@@ -827,6 +870,16 @@ async fn ensure_icon(client: &RobloxClient, path: &Path, state: Option<&Resource
     Ok((asset_id, hash))
 }
 
+/// Escape special characters for embedding in a Luau/Lua string literal.
+/// Mirrors `escape_luau_string` in `src/output.rs`.
+fn escape_lua_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
 pub async fn export(config: RblxSyncConfig, client: RobloxClient, output: Option<String>, format_lua: bool) -> Result<()> {
     let universe_id = config.universe.id;
 
@@ -843,7 +896,7 @@ pub async fn export(config: RblxSyncConfig, client: RobloxClient, output: Option
     lua.push_str("  game_passes = {\n");
     for item in passes.data {
         lua.push_str("    {\n");
-        if let Some(n) = item["name"].as_str() { lua.push_str(&format!("      name = \"{}\",\n", n)); }
+        if let Some(n) = item["name"].as_str() { lua.push_str(&format!("      name = \"{}\",\n", escape_lua_string(n))); }
         if let Some(id) = item["id"].as_u64() { lua.push_str(&format!("      id = {},\n", id)); }
         if let Some(p) = item["price"].as_u64() { lua.push_str(&format!("      price = {},\n", p)); }
         lua.push_str("    },\n");
@@ -853,7 +906,7 @@ pub async fn export(config: RblxSyncConfig, client: RobloxClient, output: Option
     lua.push_str("  developer_products = {\n");
     for item in products.data {
         lua.push_str("    {\n");
-        if let Some(n) = item["name"].as_str() { lua.push_str(&format!("      name = \"{}\",\n", n)); }
+        if let Some(n) = item["name"].as_str() { lua.push_str(&format!("      name = \"{}\",\n", escape_lua_string(n))); }
         if let Some(id) = item["id"].as_u64() { lua.push_str(&format!("      id = {},\n", id)); }
         if let Some(p) = item["price"].as_u64() { lua.push_str(&format!("      price = {},\n", p)); }
         lua.push_str("    },\n");
@@ -863,7 +916,7 @@ pub async fn export(config: RblxSyncConfig, client: RobloxClient, output: Option
     lua.push_str("  badges = {\n");
     for item in badges.data {
         lua.push_str("    {\n");
-        if let Some(n) = item["name"].as_str() { lua.push_str(&format!("      name = \"{}\",\n", n)); }
+        if let Some(n) = item["name"].as_str() { lua.push_str(&format!("      name = \"{}\",\n", escape_lua_string(n))); }
         if let Some(id) = item["id"].as_u64() { lua.push_str(&format!("      id = {},\n", id)); }
         lua.push_str("    },\n");
     }
@@ -876,5 +929,226 @@ pub async fn export(config: RblxSyncConfig, client: RobloxClient, output: Option
     info!("Exported to {}", out_path);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{BadgeConfig, GamePassConfig, UniverseConfig};
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client(server: &MockServer) -> RobloxClient {
+        RobloxClient::with_base_url("test-key".to_string(), server.uri())
+    }
+
+    fn base_config() -> RblxSyncConfig {
+        RblxSyncConfig {
+            assets_dir: "assets".to_string(),
+            creator: None,
+            universe: UniverseConfig {
+                id: 1,
+                name: None,
+                description: None,
+                genre: None,
+                playable_devices: None,
+                max_players: None,
+                private_server_cost: None,
+            },
+            game_passes: vec![],
+            developer_products: vec![],
+            badges: vec![],
+            places: vec![],
+            badge_payment_source: None,
+            output_path: None,
+        }
+    }
+
+    fn game_pass(name: &str, price: Option<u32>) -> GamePassConfig {
+        GamePassConfig {
+            name: name.to_string(),
+            description: None,
+            price,
+            icon: None,
+            is_for_sale: None,
+        }
+    }
+
+    /// Empty game-passes list endpoint (so list_game_passes returns no remote entries).
+    async fn mount_empty_game_pass_list(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/game-passes/v1/universes/1/game-passes"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data": [], "nextPageCursor": null})),
+            )
+            .mount(server)
+            .await;
+    }
+
+    // (a) Adopting a remotely-existing game pass with no state entry triggers a
+    // reconciling PATCH (not SKIP).
+    #[tokio::test]
+    async fn adopt_remote_game_pass_triggers_patch() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/game-passes/v1/universes/1/game-passes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"data": [{"id": 42, "name": "VIP Pass"}], "nextPageCursor": null}),
+            ))
+            .mount(&server)
+            .await;
+        let patch = Mock::given(method("PATCH"))
+            .and(path("/game-passes/v1/universes/1/game-passes/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 42})))
+            .expect(1)
+            .mount_as_scoped(&server)
+            .await;
+
+        let mut config = base_config();
+        config.game_passes = vec![game_pass("VIP Pass", Some(100))];
+        let mut state = SyncState::default();
+
+        sync_game_passes(1, &config, &mut state, &client(&server), false)
+            .await
+            .unwrap();
+
+        // The PATCH must have happened, and state now records the adopted ID.
+        drop(patch);
+        assert!(state.find_game_pass_by_name("VIP Pass").is_some());
+        assert_eq!(state.find_game_pass_by_name("VIP Pass").unwrap().0, 42);
+    }
+
+    // (b) A no-change run (state already matches config) produces no PATCH.
+    #[tokio::test]
+    async fn no_change_game_pass_does_not_patch() {
+        let server = MockServer::start().await;
+        mount_empty_game_pass_list(&server).await;
+        // Any PATCH would 500 and fail the run.
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let mut config = base_config();
+        config.game_passes = vec![game_pass("VIP Pass", Some(100))];
+        let mut state = SyncState::default();
+        // Seed state to exactly match config.
+        state.update_game_pass(7, "VIP Pass".to_string(), None, Some(100), None, None, None);
+
+        sync_game_passes(1, &config, &mut state, &client(&server), false)
+            .await
+            .unwrap();
+    }
+
+    // (c) genre/max_players-only universe config does not PATCH but persists to state.
+    #[tokio::test]
+    async fn universe_genre_max_players_only_persists_without_patch() {
+        let cookie_client = RobloxCookieClient::new("fake-cookie".to_string());
+        let mut config = base_config();
+        config.universe.genre = Some("adventure".to_string());
+        config.universe.max_players = Some(40);
+        let mut state = SyncState::default();
+
+        // No HTTP mock is set up; if it tried to PATCH develop.roblox.com it would error.
+        sync_universe_settings(1, &config, &mut state, &cookie_client, false)
+            .await
+            .unwrap();
+
+        let u = state.universe.as_ref().unwrap();
+        assert_eq!(u.genre.as_deref(), Some("adventure"));
+        assert_eq!(u.max_players, Some(40));
+    }
+
+    // (d) export escapes quotes and backslashes in resource names.
+    #[tokio::test]
+    async fn export_escapes_quotes_and_backslashes() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/game-passes/v1/universes/1/game-passes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{"id": 1, "name": "Quote\"And\\Slash", "price": 5}],
+                "nextPageCursor": null
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/developer-products/v2/universes/1/developer-products/creator"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"developerProducts": [], "nextPageToken": null})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/badges"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"badges": [], "nextPageCursor": null})),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("Config.luau");
+        let mut config = base_config();
+        config.universe.id = 1;
+
+        export(
+            config,
+            client(&server),
+            Some(out.to_string_lossy().to_string()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains(r#"name = "Quote\"And\\Slash","#),
+            "contents: {}",
+            contents
+        );
+    }
+
+    // (e) dry-run makes no mutating HTTP calls (only the GET list, no PATCH/POST).
+    #[tokio::test]
+    async fn dry_run_makes_no_mutating_calls() {
+        let server = MockServer::start().await;
+        // List badges (the only call dry-run should make).
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/badges"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"badges": [{"id": 9, "name": "First Win"}], "nextPageCursor": null}),
+            ))
+            .mount(&server)
+            .await;
+        // Any mutating verb fails the test.
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let mut config = base_config();
+        config.badges = vec![BadgeConfig {
+            name: "First Win".to_string(),
+            description: Some("changed".to_string()),
+            icon: None,
+            is_enabled: Some(true),
+        }];
+        let mut state = SyncState::default();
+
+        sync_badges(1, &config, &mut state, &client(&server), true)
+            .await
+            .unwrap();
+
+        // Dry run must not persist state.
+        assert!(state.badges.is_empty());
+    }
 }
 

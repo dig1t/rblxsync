@@ -78,7 +78,7 @@ fn generate_luau_content(state: &SyncState, universe_id: u64) -> String {
     // Universe
     output.push_str("\tUniverse = {\n");
     output.push_str(&format!("\t\tId = {},\n", universe_id));
-    
+
     if let Some(ref universe) = state.universe {
         if let Some(ref name) = universe.name {
             output.push_str(&format!("\t\tName = \"{}\",\n", escape_luau_string(name)));
@@ -183,6 +183,19 @@ fn escape_luau_string(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::state::{ResourceState, UniverseState};
+    use tempfile::tempdir;
+
+    fn resource(name: &str) -> ResourceState {
+        ResourceState {
+            name: name.to_string(),
+            description: None,
+            price: None,
+            is_for_sale: None,
+            is_enabled: None,
+            icon_hash: None,
+            icon_asset_id: None,
+        }
+    }
 
     #[test]
     fn test_escape_luau_string() {
@@ -192,16 +205,27 @@ mod tests {
     }
 
     #[test]
+    fn test_escape_luau_string_backslash_tab_cr() {
+        assert_eq!(escape_luau_string("a\\b"), "a\\\\b");
+        assert_eq!(escape_luau_string("a\tb"), "a\\tb");
+        assert_eq!(escape_luau_string("a\rb"), "a\\rb");
+        // Backslash must be escaped before other sequences so it doesn't double-escape.
+        assert_eq!(escape_luau_string("\\n"), "\\\\n");
+    }
+
+    #[test]
     fn test_generate_luau_content() {
-        let mut state = SyncState::default();
-        state.universe = Some(UniverseState {
-            name: Some("Test Game".to_string()),
-            description: Some("A test game".to_string()),
-            genre: None,
-            playable_devices: Some(vec!["computer".to_string(), "phone".to_string()]),
-            max_players: Some(50),
-            private_server_cost: Some("disabled".to_string()),
-        });
+        let mut state = SyncState {
+            universe: Some(UniverseState {
+                name: Some("Test Game".to_string()),
+                description: Some("A test game".to_string()),
+                genre: None,
+                playable_devices: Some(vec!["computer".to_string(), "phone".to_string()]),
+                max_players: Some(50),
+                private_server_cost: Some("disabled".to_string()),
+            }),
+            ..Default::default()
+        };
         state.game_passes.insert(
             123,
             ResourceState {
@@ -224,5 +248,65 @@ mod tests {
         assert!(content.contains("IsForSale = true"));
         assert!(content.contains(":: Universe"));
         assert!(content.contains("GamePass"));
+    }
+
+    #[test]
+    fn test_generate_config_writes_file_and_creates_dirs() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("nested/sub/Config.luau");
+        let state = SyncState::default();
+
+        generate_config(&state, 555, output_path.to_str().unwrap()).unwrap();
+
+        assert!(output_path.exists());
+        let content = std::fs::read_to_string(&output_path).unwrap();
+        assert!(content.contains("Id = 555"));
+        assert!(content.contains("--!strict"));
+    }
+
+    #[test]
+    fn test_deterministic_ordering() {
+        let mut state = SyncState::default();
+        state.game_passes.insert(30, resource("gp_c"));
+        state.game_passes.insert(10, resource("gp_a"));
+        state.game_passes.insert(20, resource("gp_b"));
+        state.developer_products.insert(300, resource("dp_c"));
+        state.developer_products.insert(100, resource("dp_a"));
+        state.badges.insert(3000, resource("b_c"));
+        state.badges.insert(1000, resource("b_a"));
+
+        let content = generate_luau_content(&state, 1);
+        // Output is sorted by id, so generation is deterministic regardless of insert order.
+        assert_eq!(content, generate_luau_content(&state, 1));
+
+        let idx = |s: &str| content.find(s).unwrap();
+        assert!(idx("Id = 10") < idx("Id = 20"));
+        assert!(idx("Id = 20") < idx("Id = 30"));
+        assert!(idx("Id = 100") < idx("Id = 300"));
+        assert!(idx("Id = 1000") < idx("Id = 3000"));
+    }
+
+    #[test]
+    fn test_private_server_cost_disabled_vs_numeric() {
+        let disabled = SyncState {
+            universe: Some(UniverseState {
+                private_server_cost: Some("disabled".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let content = generate_luau_content(&disabled, 1);
+        assert!(content.contains("PrivateServerCost = \"disabled\""));
+
+        let numeric = SyncState {
+            universe: Some(UniverseState {
+                private_server_cost: Some("100".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let content = generate_luau_content(&numeric, 1);
+        assert!(content.contains("PrivateServerCost = 100,"));
+        assert!(!content.contains("PrivateServerCost = \"100\""));
     }
 }
