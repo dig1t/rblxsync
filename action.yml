@@ -60,6 +60,11 @@ runs:
       env:
         ROBLOX_API_KEY: ${{ inputs.api_key }}
         ROBLOX_COOKIE: ${{ inputs.roblox_cookie }}
+        COMMAND: ${{ inputs.command }}
+        CONFIG: ${{ inputs.config }}
+        # ARGS is intentionally left unquoted below so multiple flags
+        # (e.g. "--dry-run --foo") word-split into separate arguments.
+        ARGS: ${{ inputs.args }}
       run: |
-        .rblxsync-action/target/release/rblxsync ${{ inputs.command }} --config ${{ inputs.config }} ${{ inputs.args }}
+        .rblxsync-action/target/release/rblxsync "$COMMAND" --config "$CONFIG" $ARGS
 

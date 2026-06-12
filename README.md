@@ -351,9 +351,9 @@ Configure your experience's metadata. The `id` field is **required**; all other 
 - `"computer"`, `"phone"`, `"tablet"`, `"console"`, `"vr"`
 
 **`private_server_cost` options:**
-- `"disabled"` — Private servers are not available
-- `"0"` — Free private servers
-- `"100"` (or any number) — Cost in Robux for paid private servers
+- `"disabled"` (string) — Private servers are not available
+- `0` — Free private servers
+- `100` (or any number) — Cost in Robux for paid private servers
 
 ```yaml
 universe:
@@ -363,7 +363,7 @@ universe:
   genre: "adventure"
   playable_devices: ["computer", "phone", "tablet", "console"]
   max_players: 50
-  private_server_cost: "100"  # "disabled", "0" for free, or a number for paid
+  private_server_cost: 100  # "disabled" (string), 0 for free, or a number for paid
 ```
 
 > **Note:** Updating universe settings requires the `ROBLOX_COOKIE` environment variable to be set.
@@ -372,7 +372,7 @@ universe:
 
 ### `game_passes` — Game Pass Configuration
 
-Define Game Passes for your experience. Each Game Pass is matched by **name** (case-sensitive).
+Define Game Passes for your experience. Each Game Pass is matched by **name** (case-insensitive).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -406,7 +406,7 @@ game_passes:
 
 ### `developer_products` — Developer Product Configuration
 
-Define Developer Products (one-time purchasable items) for your experience. Matched by **name** (case-sensitive).
+Define Developer Products (one-time purchasable items) for your experience. Matched by **name** (case-insensitive).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -414,7 +414,7 @@ Define Developer Products (one-time purchasable items) for your experience. Matc
 | `description` | string | No | Product description |
 | `price` | number | **Yes** | Price in Robux |
 | `icon` | string | No | Icon filename (relative to `assets_dir`) |
-| `is_active` | boolean | No | Whether the product is active |
+| `is_active` | boolean | No | Whether the product is active (currently accepted but not synced) |
 
 ```yaml
 developer_products:
@@ -441,7 +441,7 @@ developer_products:
 
 ### `badges` — Badge Configuration
 
-Define Badges for your experience. Matched by **name** (case-sensitive).
+Define Badges for your experience. Matched by **name** (case-insensitive).
 
 > **Note:** Creating new badges costs **100 Robux each**. Set `badge_payment_source` to specify where funds come from.
 
