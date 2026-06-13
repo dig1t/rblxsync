@@ -14,7 +14,7 @@ universe:
   genre: "adventure"
   playable_devices: ["computer", "phone", "tablet"] # "computer", "phone", "tablet", "console", "vr"
   max_players: 50
-  private_server_cost: "disabled" # "disabled" to disable private servers, "0" for free private servers, "100" for paid private servers
+  private_server_cost: "disabled" # "disabled" (string) to disable private servers, 0 for free private servers, 100 for paid private servers
 
 game_passes:
   - name: "VIP Pass"
@@ -28,7 +28,7 @@ developer_products:
     description: "Double speed for 5 minutes"
     price: 50
     icon: "boost.png"
-    is_active: true
+    is_active: true # Note: currently accepted but not synced
 
 badges:
   - name: "First Win"
