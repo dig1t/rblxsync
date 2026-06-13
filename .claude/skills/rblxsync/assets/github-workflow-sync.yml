@@ -1,0 +1,45 @@
+# Copy to .github/workflows/sync.yml
+#
+# Prerequisites (repo Settings -> Secrets and variables -> Actions):
+#   - ROBLOX_API_KEY  (required)
+#   - ROBLOX_COOKIE   (only if rblxsync.yml sets universe settings)
+#
+# Pin the action to a published ref. v0.1.0 exists; a moving @v1 tag does NOT
+# yet — do not use @v1 until it's published. @main works but is unpinned.
+
+name: Sync Roblox Experience
+
+on:
+  push:
+    branches: [main]
+    # Optional: only run when relevant files change.
+    # paths:
+    #   - "rblxsync.yml"
+    #   - "rblxsync-lock.yml"
+    #   - "assets/**"
+  workflow_dispatch: {}   # allow manual runs
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Recommended: preview first on PRs / dry runs.
+      # The `args` input is appended UNQUOTED and word-splits — use only
+      # space-free flags. One arg containing a space will be broken apart.
+      - name: Preview changes (dry run)
+        uses: dig1t/rblxsync@v0.1.0
+        with:
+          api_key: ${{ secrets.ROBLOX_API_KEY }}
+          roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
+          command: run
+          args: --dry-run
+
+      - name: Sync Roblox metadata
+        uses: dig1t/rblxsync@v0.1.0
+        with:
+          api_key: ${{ secrets.ROBLOX_API_KEY }}
+          roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
+          command: run
+          config: rblxsync.yml
