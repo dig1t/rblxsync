@@ -35,7 +35,7 @@ jobs:
       - name: Build website
         working-directory: website
         run: npm run build
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: website/build
 
