@@ -23,16 +23,16 @@ impl<'de> Deserialize<'de> for PrivateServerCost {
         D: Deserializer<'de>,
     {
         use serde::de::{self, Visitor};
-        
+
         struct PrivateServerCostVisitor;
-        
+
         impl<'de> Visitor<'de> for PrivateServerCostVisitor {
             type Value = PrivateServerCost;
-            
+
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("a number (0 for free, positive for paid) or \"disabled\"")
             }
-            
+
             fn visit_str<E>(self, value: &str) -> std::result::Result<PrivateServerCost, E>
             where
                 E: de::Error,
@@ -52,7 +52,7 @@ impl<'de> Deserialize<'de> for PrivateServerCost {
                     }
                 }
             }
-            
+
             fn visit_u64<E>(self, value: u64) -> std::result::Result<PrivateServerCost, E>
             where
                 E: de::Error,
@@ -65,7 +65,7 @@ impl<'de> Deserialize<'de> for PrivateServerCost {
                     Err(de::Error::custom("private_server_cost too large"))
                 }
             }
-            
+
             fn visit_i64<E>(self, value: i64) -> std::result::Result<PrivateServerCost, E>
             where
                 E: de::Error,
@@ -77,7 +77,7 @@ impl<'de> Deserialize<'de> for PrivateServerCost {
                 }
             }
         }
-        
+
         deserializer.deserialize_any(PrivateServerCostVisitor)
     }
 }
@@ -108,8 +108,8 @@ impl Config {
     pub fn from_env() -> Result<Self> {
         let _ = dotenvy::dotenv();
 
-        let api_key = env::var("ROBLOX_API_KEY")
-            .context("ROBLOX_API_KEY environment variable not set")?;
+        let api_key =
+            env::var("ROBLOX_API_KEY").context("ROBLOX_API_KEY environment variable not set")?;
 
         let roblox_cookie = env::var("ROBLOX_COOKIE").ok();
 
@@ -171,10 +171,10 @@ pub struct UniverseConfig {
 impl UniverseConfig {
     /// Check if any universe settings are defined
     pub fn has_settings(&self) -> bool {
-        self.name.is_some() 
-            || self.description.is_some() 
-            || self.genre.is_some() 
-            || self.playable_devices.is_some() 
+        self.name.is_some()
+            || self.description.is_some()
+            || self.genre.is_some()
+            || self.playable_devices.is_some()
             || self.max_players.is_some()
             || self.private_server_cost.is_some()
     }
@@ -218,8 +218,8 @@ impl RblxSyncConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file at {:?}", path))?;
-        let config: RblxSyncConfig = serde_yaml::from_str(&content)
-            .context("Failed to parse config file")?;
+        let config: RblxSyncConfig =
+            serde_yaml::from_str(&content).context("Failed to parse config file")?;
         Ok(config)
     }
 }
@@ -290,7 +290,10 @@ mod tests {
         let result: std::result::Result<PrivateServerCost, _> =
             serde_yaml::from_str("\"nonsense\"");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid private_server_cost"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid private_server_cost"));
     }
 
     // --- PrivateServerCost serialization round-trip ---
@@ -310,12 +313,22 @@ mod tests {
 
     #[test]
     fn test_psc_serialize_disabled_as_string() {
-        assert_eq!(serde_yaml::to_string(&PrivateServerCost::Disabled).unwrap().trim(), "disabled");
+        assert_eq!(
+            serde_yaml::to_string(&PrivateServerCost::Disabled)
+                .unwrap()
+                .trim(),
+            "disabled"
+        );
     }
 
     #[test]
     fn test_psc_serialize_free_as_zero() {
-        assert_eq!(serde_yaml::to_string(&PrivateServerCost::Free).unwrap().trim(), "0");
+        assert_eq!(
+            serde_yaml::to_string(&PrivateServerCost::Free)
+                .unwrap()
+                .trim(),
+            "0"
+        );
     }
 
     // --- RblxSyncConfig parsing ---
@@ -355,7 +368,10 @@ mod tests {
         assert_eq!(config.assets_dir, "assets/icons/");
         assert_eq!(config.universe.id, 123456789);
         assert_eq!(config.universe.name.as_deref(), Some("My Awesome Game"));
-        assert_eq!(config.universe.private_server_cost, Some(PrivateServerCost::Disabled));
+        assert_eq!(
+            config.universe.private_server_cost,
+            Some(PrivateServerCost::Disabled)
+        );
         assert_eq!(config.game_passes.len(), 1);
         assert_eq!(config.game_passes[0].name, "VIP Pass");
         assert_eq!(config.developer_products.len(), 1);
