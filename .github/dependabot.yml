@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Keep the pinned action SHAs in release.yml (and other workflows) current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Keep Rust crate dependencies up to date.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
