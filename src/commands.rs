@@ -986,6 +986,13 @@ async fn sync_badges(
                 if badge.icon.is_some() { ", icon" } else { "" }
             );
             created_count += 1;
+            // Roblox's badge create endpoint 500s when called back-to-back
+            // while it's still processing the per-badge 100 Robux charge
+            // and asset commits server-side. A short breather between
+            // creates lets the loop keep moving instead of failing on
+            // every-other badge and requiring multiple sync reruns to
+            // get through a wave.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             new_id
         };
 
