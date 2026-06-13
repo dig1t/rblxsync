@@ -456,9 +456,17 @@ async fn sync_game_passes(
             }
 
             let resp = client.create_game_pass(universe_id, &body).await?;
+            // Roblox's create-game-pass endpoint returns `gamePassId`, not `id`.
+            // Without this fallback the resource is created on Roblox but
+            // sync reports failure — the lock file misses the ID and the
+            // next `rblxsync run` creates a duplicate under the same name.
             let new_id = resp["id"]
                 .as_u64()
-                .ok_or(anyhow!("Created game pass has no ID"))?;
+                .or_else(|| resp["gamePassId"].as_u64())
+                .or_else(|| resp["gamePassId"].as_str().and_then(|s| s.parse().ok()))
+                .ok_or_else(|| {
+                    anyhow!("Created game pass has no ID. Response: {}", resp)
+                })?;
             info!(
                 "  [CREATED] Game Pass '{}' (ID: {}) - created with: name, description, price{}",
                 pass.name,
@@ -698,9 +706,14 @@ async fn sync_developer_products(
                 body["iconAssetId"] = aid.into();
             }
             let resp = client.create_developer_product(universe_id, &body).await?;
+            // Same as game-pass create: the endpoint returns `productId`.
+            // Legacy field shapes covered for resilience.
             let new_id = resp["id"]
                 .as_u64()
-                .ok_or(anyhow!("Created product has no ID"))?;
+                .or_else(|| resp["productId"].as_u64())
+                .or_else(|| resp["developerProductId"].as_u64())
+                .or_else(|| resp["ProductId"].as_u64())
+                .ok_or_else(|| anyhow!("Created product has no ID. Response: {}", resp))?;
             info!("  [CREATED] Developer Product '{}' (ID: {}) - created with: name, price, description{}",
                 prod.name, new_id,
                 if prod.icon.is_some() { ", icon" } else { "" });
@@ -958,9 +971,14 @@ async fn sync_badges(
                 }
             };
 
+            // Badge create response shapes: `id` historically; legacy badge
+            // upload paths return `badgeId` or `assetId`. Covering all so
+            // future Roblox changes don't silently leak the create.
             let new_id = resp["id"]
                 .as_u64()
-                .ok_or(anyhow!("Created badge has no ID"))?;
+                .or_else(|| resp["badgeId"].as_u64())
+                .or_else(|| resp["assetId"].as_u64())
+                .ok_or_else(|| anyhow!("Created badge has no ID. Response: {}", resp))?;
             info!(
                 "  [CREATED] Badge '{}' (ID: {}) - created with: name, description{}",
                 badge.name,
