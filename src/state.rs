@@ -83,7 +83,8 @@ impl SyncState {
 
     /// Find a game pass by name (case-insensitive) and return (id, state)
     pub fn find_game_pass_by_name(&self, name: &str) -> Option<(u64, &ResourceState)> {
-        self.game_passes.iter()
+        self.game_passes
+            .iter()
             .find(|(_, state)| state.name.to_lowercase() == name.to_lowercase())
             .map(|(id, state)| (*id, state))
     }
@@ -91,77 +92,88 @@ impl SyncState {
     #[allow(clippy::too_many_arguments)]
     pub fn update_game_pass(
         &mut self,
-        id: u64, 
-        name: String, 
+        id: u64,
+        name: String,
         description: Option<String>,
         price: Option<u64>,
         is_for_sale: Option<bool>,
-        icon_hash: Option<String>, 
-        icon_asset_id: Option<u64>
+        icon_hash: Option<String>,
+        icon_asset_id: Option<u64>,
     ) {
-        self.game_passes.insert(id, ResourceState { 
-            name, 
-            description,
-            price,
-            is_for_sale,
-            is_enabled: None,
-            icon_hash, 
-            icon_asset_id 
-        });
+        self.game_passes.insert(
+            id,
+            ResourceState {
+                name,
+                description,
+                price,
+                is_for_sale,
+                is_enabled: None,
+                icon_hash,
+                icon_asset_id,
+            },
+        );
     }
-    
+
     /// Find a developer product by name (case-insensitive) and return (id, state)
     pub fn find_developer_product_by_name(&self, name: &str) -> Option<(u64, &ResourceState)> {
-        self.developer_products.iter()
+        self.developer_products
+            .iter()
             .find(|(_, state)| state.name.to_lowercase() == name.to_lowercase())
             .map(|(id, state)| (*id, state))
     }
 
     pub fn update_developer_product(
-        &mut self, 
-        id: u64, 
-        name: String, 
+        &mut self,
+        id: u64,
+        name: String,
         description: Option<String>,
         price: Option<u64>,
-        icon_hash: Option<String>, 
-        icon_asset_id: Option<u64>
+        icon_hash: Option<String>,
+        icon_asset_id: Option<u64>,
     ) {
-        self.developer_products.insert(id, ResourceState { 
-            name, 
-            description,
-            price,
-            is_for_sale: None,
-            is_enabled: None,
-            icon_hash, 
-            icon_asset_id 
-        });
+        self.developer_products.insert(
+            id,
+            ResourceState {
+                name,
+                description,
+                price,
+                is_for_sale: None,
+                is_enabled: None,
+                icon_hash,
+                icon_asset_id,
+            },
+        );
     }
 
     /// Find a badge by name (case-insensitive) and return (id, state)
     pub fn find_badge_by_name(&self, name: &str) -> Option<(u64, &ResourceState)> {
-        self.badges.iter()
+        self.badges
+            .iter()
             .find(|(_, state)| state.name.to_lowercase() == name.to_lowercase())
             .map(|(id, state)| (*id, state))
     }
 
     pub fn update_badge(
-        &mut self, 
-        id: u64, 
-        name: String, 
+        &mut self,
+        id: u64,
+        name: String,
         description: Option<String>,
         is_enabled: Option<bool>,
-        icon_hash: Option<String>, 
-        icon_asset_id: Option<u64>
+        icon_hash: Option<String>,
+        icon_asset_id: Option<u64>,
     ) {
-        self.badges.insert(id, ResourceState { 
-            name, 
-            description,
-            price: None,
-            is_for_sale: None,
-            is_enabled,
-            icon_hash, 
-            icon_asset_id 
-        });
+        self.badges.insert(
+            id,
+            ResourceState {
+                name,
+                description,
+                price: None,
+                is_for_sale: None,
+                is_enabled,
+                icon_hash,
+                icon_asset_id,
+            },
+        );
     }
 
     pub fn update_universe(
@@ -212,15 +224,16 @@ mod tests {
             Some("disabled".to_string()),
         );
         state.update_game_pass(
-            1, "VIP".to_string(), Some("d".to_string()), Some(100), Some(true),
-            Some("hash".to_string()), Some(999),
+            1,
+            "VIP".to_string(),
+            Some("d".to_string()),
+            Some(100),
+            Some(true),
+            Some("hash".to_string()),
+            Some(999),
         );
-        state.update_developer_product(
-            2, "Boost".to_string(), None, Some(50), None, None,
-        );
-        state.update_badge(
-            3, "Win".to_string(), None, Some(true), None, None,
-        );
+        state.update_developer_product(2, "Boost".to_string(), None, Some(50), None, None);
+        state.update_badge(3, "Win".to_string(), None, Some(true), None, None);
 
         state.save(dir.path()).unwrap();
         assert!(dir.path().join("rblxsync-lock.yml").exists());

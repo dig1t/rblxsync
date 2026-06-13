@@ -84,16 +84,23 @@ fn generate_luau_content(state: &SyncState, universe_id: u64) -> String {
             output.push_str(&format!("\t\tName = \"{}\",\n", escape_luau_string(name)));
         }
         if let Some(ref description) = universe.description {
-            output.push_str(&format!("\t\tDescription = \"{}\",\n", escape_luau_string(description)));
+            output.push_str(&format!(
+                "\t\tDescription = \"{}\",\n",
+                escape_luau_string(description)
+            ));
         }
         if let Some(ref genre) = universe.genre {
             output.push_str(&format!("\t\tGenre = \"{}\",\n", escape_luau_string(genre)));
         }
         if let Some(ref devices) = universe.playable_devices {
-            let devices_str: Vec<String> = devices.iter()
+            let devices_str: Vec<String> = devices
+                .iter()
                 .map(|d| format!("\"{}\"", escape_luau_string(d)))
                 .collect();
-            output.push_str(&format!("\t\tPlayableDevices = {{ {} }},\n", devices_str.join(", ")));
+            output.push_str(&format!(
+                "\t\tPlayableDevices = {{ {} }},\n",
+                devices_str.join(", ")
+            ));
         }
         if let Some(max_players) = universe.max_players {
             output.push_str(&format!("\t\tMaxPlayers = {},\n", max_players));
@@ -115,9 +122,15 @@ fn generate_luau_content(state: &SyncState, universe_id: u64) -> String {
     for (id, resource) in game_passes {
         output.push_str("\t\t{\n");
         output.push_str(&format!("\t\t\tId = {},\n", id));
-        output.push_str(&format!("\t\t\tName = \"{}\",\n", escape_luau_string(&resource.name)));
+        output.push_str(&format!(
+            "\t\t\tName = \"{}\",\n",
+            escape_luau_string(&resource.name)
+        ));
         if let Some(ref description) = resource.description {
-            output.push_str(&format!("\t\t\tDescription = \"{}\",\n", escape_luau_string(description)));
+            output.push_str(&format!(
+                "\t\t\tDescription = \"{}\",\n",
+                escape_luau_string(description)
+            ));
         }
         if let Some(price) = resource.price {
             output.push_str(&format!("\t\t\tPrice = {},\n", price));
@@ -136,9 +149,15 @@ fn generate_luau_content(state: &SyncState, universe_id: u64) -> String {
     for (id, resource) in products {
         output.push_str("\t\t{\n");
         output.push_str(&format!("\t\t\tId = {},\n", id));
-        output.push_str(&format!("\t\t\tName = \"{}\",\n", escape_luau_string(&resource.name)));
+        output.push_str(&format!(
+            "\t\t\tName = \"{}\",\n",
+            escape_luau_string(&resource.name)
+        ));
         if let Some(ref description) = resource.description {
-            output.push_str(&format!("\t\t\tDescription = \"{}\",\n", escape_luau_string(description)));
+            output.push_str(&format!(
+                "\t\t\tDescription = \"{}\",\n",
+                escape_luau_string(description)
+            ));
         }
         if let Some(price) = resource.price {
             output.push_str(&format!("\t\t\tPrice = {},\n", price));
@@ -154,9 +173,15 @@ fn generate_luau_content(state: &SyncState, universe_id: u64) -> String {
     for (id, resource) in badges {
         output.push_str("\t\t{\n");
         output.push_str(&format!("\t\t\tId = {},\n", id));
-        output.push_str(&format!("\t\t\tName = \"{}\",\n", escape_luau_string(&resource.name)));
+        output.push_str(&format!(
+            "\t\t\tName = \"{}\",\n",
+            escape_luau_string(&resource.name)
+        ));
         if let Some(ref description) = resource.description {
-            output.push_str(&format!("\t\t\tDescription = \"{}\",\n", escape_luau_string(description)));
+            output.push_str(&format!(
+                "\t\t\tDescription = \"{}\",\n",
+                escape_luau_string(description)
+            ));
         }
         if let Some(is_enabled) = resource.is_enabled {
             output.push_str(&format!("\t\t\tIsEnabled = {},\n", is_enabled));

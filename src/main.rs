@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
-use rblxsync::config::{Config, RblxSyncConfig};
+use log::{error, info};
 use rblxsync::api::{RobloxClient, RobloxCookieClient};
-use rblxsync::state::SyncState;
 use rblxsync::commands;
-use log::{info, error};
+use rblxsync::config::{Config, RblxSyncConfig};
+use rblxsync::state::SyncState;
 use std::path::Path;
 
 #[derive(Parser)]
@@ -47,10 +47,10 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Cli::parse();
-    
-    // Check for "Validate" command early to avoid needing API key if possible, 
+
+    // Check for "Validate" command early to avoid needing API key if possible,
     // but for now we'll load env for all.
-    let env_config = Config::from_env(); 
+    let env_config = Config::from_env();
 
     let command = args.command.unwrap_or(Commands::Run { dry_run: false });
 
@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
             let config = RblxSyncConfig::load(config_path)?;
             let root = config_path.parent().unwrap_or(Path::new("."));
             let state = SyncState::load(root)?;
-            
+
             // Check if universe settings are defined and require ROBLOX_COOKIE
             let cookie_client = if config.universe.has_settings() {
                 match &env_config.roblox_cookie {
@@ -107,7 +107,10 @@ async fn main() -> anyhow::Result<()> {
                         Some(RobloxCookieClient::new(cookie.clone()))
                     }
                     None => {
-                        error!("Universe settings are defined in {} but ROBLOX_COOKIE is not set.", args.config);
+                        error!(
+                            "Universe settings are defined in {} but ROBLOX_COOKIE is not set.",
+                            args.config
+                        );
                         error!("");
                         error!("To update universe settings (name, description, etc.), you must provide your");
                         error!(".ROBLOSECURITY cookie. Add the following to your .env file:");
@@ -126,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 None
             };
-            
+
             commands::run(config, state, client, cookie_client, dry_run).await?;
         }
         Commands::Publish => {
