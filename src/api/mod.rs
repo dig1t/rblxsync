@@ -22,9 +22,15 @@ fn truncate_body(text: &str) -> String {
 }
 
 /// Sends a request, retrying on HTTP 429 honoring the Retry-After header
-/// (falling back to exponential backoff: 1s/2s/4s, max 3 retries).
+/// (falling back to exponential backoff, each delay capped at 30s, up to
+/// 10 retries — total ~3 minutes of patience before bailing).
+///
+/// The previous 3-retry / 1-2-4s budget was too short for Roblox's
+/// monetization endpoints, which can stay rate-limited for tens of seconds
+/// per bucket during a sync that touches many resources.
 async fn send_with_retry(build: impl Fn() -> RequestBuilder) -> Result<reqwest::Response> {
-    const MAX_RETRIES: u32 = 3;
+    const MAX_RETRIES: u32 = 10;
+    const MAX_DELAY_SECS: u64 = 30;
     let mut attempt = 0;
     loop {
         let response = build().send().await?;
@@ -34,11 +40,13 @@ async fn send_with_retry(build: impl Fn() -> RequestBuilder) -> Result<reqwest::
                 .get(reqwest::header::RETRY_AFTER)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok());
-            let delay = retry_after.unwrap_or(1u64 << attempt);
+            let backoff = std::cmp::min(1u64 << attempt, MAX_DELAY_SECS);
+            let delay = retry_after.unwrap_or(backoff).min(MAX_DELAY_SECS);
             log::warn!(
-                "Rate limited (429), retrying in {}s (attempt {})",
+                "Rate limited (429), retrying in {}s (attempt {}/{})",
                 delay,
-                attempt + 1
+                attempt + 1,
+                MAX_RETRIES
             );
             tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             attempt += 1;
@@ -88,9 +96,27 @@ impl RobloxClient {
             Some(_) => {
                 send_with_retry(|| builder.try_clone().expect("request is cloneable")).await?
             }
-            // Multipart/stream bodies can't be cloned; send once without 429 retry.
+            // Multipart/stream bodies can't be cloned; send once without 429
+            // retry. Hot endpoints (game pass create / dev product update /
+            // badge create) should use `execute_factory` instead.
             None => builder.send().await?,
         };
+        Self::handle_response(response).await
+    }
+
+    /// Like `execute` but takes a factory closure that builds a fresh request
+    /// on every retry attempt. Use this for multipart / stream bodies where
+    /// `reqwest::RequestBuilder::try_clone()` returns `None` and the plain
+    /// `execute` would fail on the first 429 instead of waiting through it.
+    async fn execute_factory<T: DeserializeOwned, F>(&self, build: F) -> Result<T>
+    where
+        F: Fn() -> RequestBuilder,
+    {
+        let response = send_with_retry(build).await?;
+        Self::handle_response(response).await
+    }
+
+    async fn handle_response<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
 
@@ -166,10 +192,12 @@ impl RobloxClient {
             "{}/game-passes/v1/universes/{}/game-passes",
             self.base_url, universe_id
         );
-        let form = json_to_multipart(data);
         log::debug!("Creating game pass at: {}", url);
         let result: serde_json::Value = self
-            .execute(self.request(Method::POST, &url).multipart(form))
+            .execute_factory(|| {
+                self.request(Method::POST, &url)
+                    .multipart(json_to_multipart(data))
+            })
             .await?;
         log::info!("Create game pass response: {}", result);
         Ok(result)
@@ -186,9 +214,11 @@ impl RobloxClient {
             self.base_url, universe_id, game_pass_id
         );
         log::debug!("Updating game pass at URL: {} with data: {}", url, data);
-        let form = json_to_multipart(data);
-        self.execute(self.request(Method::PATCH, &url).multipart(form))
-            .await
+        self.execute_factory(|| {
+            self.request(Method::PATCH, &url)
+                .multipart(json_to_multipart(data))
+        })
+        .await
     }
 
     /// Update a game pass with an optional image file upload
@@ -209,23 +239,21 @@ impl RobloxClient {
             data
         );
 
-        let mut form = json_to_multipart(data);
-
-        // Add image file if provided (game passes API uses "file" field name)
-        if let Some((file_bytes, filename)) = image_data {
-            log::debug!(
-                "Adding file to form: {} ({} bytes)",
-                filename,
-                file_bytes.len()
-            );
-            let file_part = reqwest::multipart::Part::bytes(file_bytes)
-                .file_name(filename)
-                .mime_str("image/png")?;
-            form = form.part("file", file_part);
-        }
-
-        self.execute(self.request(Method::PATCH, &url).multipart(form))
-            .await
+        self.execute_factory(|| {
+            let mut form = json_to_multipart(data);
+            // The image bytes have to be cloned per attempt — reqwest's
+            // multipart bodies are stream-once and the retry layer builds
+            // a fresh request each iteration.
+            if let Some((file_bytes, filename)) = &image_data {
+                let file_part = reqwest::multipart::Part::bytes(file_bytes.clone())
+                    .file_name(filename.clone())
+                    .mime_str("image/png")
+                    .expect("image/png is a valid MIME type");
+                form = form.part("file", file_part);
+            }
+            self.request(Method::PATCH, &url).multipart(form)
+        })
+        .await
     }
 
     // --- Developer Products ---
@@ -269,9 +297,11 @@ impl RobloxClient {
             self.base_url, universe_id
         );
         log::debug!("Creating developer product at: {}", url);
-        let form = json_to_multipart(data);
         let result: serde_json::Value = self
-            .execute(self.request(Method::POST, &url).multipart(form))
+            .execute_factory(|| {
+                self.request(Method::POST, &url)
+                    .multipart(json_to_multipart(data))
+            })
             .await?;
         log::info!("Create developer product response: {}", result);
         Ok(result)
@@ -292,9 +322,11 @@ impl RobloxClient {
             url,
             data
         );
-        let form = json_to_multipart(data);
-        self.execute(self.request(Method::PATCH, &url).multipart(form))
-            .await
+        self.execute_factory(|| {
+            self.request(Method::PATCH, &url)
+                .multipart(json_to_multipart(data))
+        })
+        .await
     }
 
     /// Update a developer product with an optional image file upload
@@ -315,23 +347,18 @@ impl RobloxClient {
             data
         );
 
-        let mut form = json_to_multipart(data);
-
-        // Add image file if provided
-        if let Some((file_bytes, filename)) = image_data {
-            log::debug!(
-                "Adding imageFile to form: {} ({} bytes)",
-                filename,
-                file_bytes.len()
-            );
-            let file_part = reqwest::multipart::Part::bytes(file_bytes)
-                .file_name(filename)
-                .mime_str("image/png")?;
-            form = form.part("imageFile", file_part);
-        }
-
-        self.execute(self.request(Method::PATCH, &url).multipart(form))
-            .await
+        self.execute_factory(|| {
+            let mut form = json_to_multipart(data);
+            if let Some((file_bytes, filename)) = &image_data {
+                let file_part = reqwest::multipart::Part::bytes(file_bytes.clone())
+                    .file_name(filename.clone())
+                    .mime_str("image/png")
+                    .expect("image/png is a valid MIME type");
+                form = form.part("imageFile", file_part);
+            }
+            self.request(Method::PATCH, &url).multipart(form)
+        })
+        .await
     }
 
     // --- Badges ---
@@ -388,30 +415,32 @@ impl RobloxClient {
         );
         log::debug!("Creating badge at: {}", url);
 
-        let mut form = reqwest::multipart::Form::new()
-            .text("name", name.to_string())
-            .text("description", description.to_string());
+        self.execute_factory(|| {
+            let mut form = reqwest::multipart::Form::new()
+                .text("name", name.to_string())
+                .text("description", description.to_string());
 
-        // Add payment source type if provided (1 = User, 2 = Group)
-        if let Some(source_type) = payment_source_type {
-            let type_id = match source_type.to_lowercase().as_str() {
-                "user" => "1",
-                "group" => "2",
-                _ => "1", // Default to user
-            };
-            form = form.text("paymentSourceType", type_id.to_string());
-        }
+            // Payment source type (1 = User, 2 = Group)
+            if let Some(source_type) = payment_source_type {
+                let type_id = match source_type.to_lowercase().as_str() {
+                    "user" => "1",
+                    "group" => "2",
+                    _ => "1",
+                };
+                form = form.text("paymentSourceType", type_id.to_string());
+            }
 
-        // Add image file if provided
-        if let Some((data, filename)) = image_data {
-            let file_part = reqwest::multipart::Part::bytes(data)
-                .file_name(filename)
-                .mime_str("image/png")?;
-            form = form.part("request.files", file_part);
-        }
+            if let Some((data, filename)) = &image_data {
+                let file_part = reqwest::multipart::Part::bytes(data.clone())
+                    .file_name(filename.clone())
+                    .mime_str("image/png")
+                    .expect("image/png is a valid MIME type");
+                form = form.part("request.files", file_part);
+            }
 
-        self.execute(self.request(Method::POST, &url).multipart(form))
-            .await
+            self.request(Method::POST, &url).multipart(form)
+        })
+        .await
     }
 
     pub async fn update_badge(
@@ -439,14 +468,15 @@ impl RobloxClient {
         );
         log::debug!("Updating badge icon at URL: {}", url);
 
-        let file_part = reqwest::multipart::Part::bytes(image_data)
-            .file_name(filename.to_string())
-            .mime_str("image/png")?;
-
-        let form = reqwest::multipart::Form::new().part("request.files", file_part);
-
-        self.execute(self.request(Method::POST, &url).multipart(form))
-            .await
+        self.execute_factory(|| {
+            let file_part = reqwest::multipart::Part::bytes(image_data.clone())
+                .file_name(filename.to_string())
+                .mime_str("image/png")
+                .expect("image/png is a valid MIME type");
+            let form = reqwest::multipart::Form::new().part("request.files", file_part);
+            self.request(Method::POST, &url).multipart(form)
+        })
+        .await
     }
 
     // --- Assets (Images) ---

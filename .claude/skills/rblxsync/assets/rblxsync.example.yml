@@ -1,0 +1,54 @@
+# rblxsync.yml — annotated template.
+# Only `universe.id` is required. Delete any section you don't need and start small.
+# Full schema: references/config-schema.md
+
+# Directory holding icon files referenced below (default: "assets").
+assets_dir: assets/icons/
+
+# Who pays the 100 Robux fee per NEW badge: "user" or "group". Only needed if you create badges.
+badge_payment_source: "user"
+
+# If set, every successful `rblxsync run` regenerates a typed Luau module here.
+# Point this at a Rojo-synced path so game code can require it.
+output_path: "src/shared/Config.luau"
+
+# Asset creation context for uploaded icons. Required only when uploading icons.
+creator:
+  id: "12345678"   # User ID or Group ID, as a string (quote it)
+  type: "user"     # "user" or "group"
+
+universe:
+  id: 123456789                                  # Universe ID (required) — NOT a place ID
+  # --- Everything below triggers the ROBLOX_COOKIE requirement on `run`. ---
+  # If you only want `id`, delete the rest to avoid needing a cookie.
+  name: "My Awesome Game"                        # synced (cookie)
+  description: "Updated via rblxsync!"           # synced (cookie)
+  genre: "adventure"                             # LOCAL-ONLY: never sent to Roblox
+  playable_devices: ["computer", "phone", "tablet"]  # computer | phone | tablet | console | vr
+  max_players: 50                                # LOCAL-ONLY: never PATCHed (per-place setting)
+  private_server_cost: "disabled"               # "disabled" | 0 (free) | 100 (Robux)
+
+game_passes:
+  - name: "VIP Pass"                # match key (case-insensitive); renaming creates a NEW pass
+    description: "Exclusive access and perks"
+    price: 100
+    icon: "vip.png"                 # relative to assets_dir
+    is_for_sale: true               # synced
+
+developer_products:
+  - name: "Speed Boost"
+    description: "Double speed for 5 minutes"
+    price: 50                       # REQUIRED for developer products
+    icon: "boost.png"
+    is_active: true                 # parsed but NOT synced — has no effect today
+
+badges:
+  - name: "First Win"               # creating a NEW badge costs 100 Robux
+    description: "Awarded for your first victory!"
+    icon: "first_win.png"
+    is_enabled: true
+
+places:
+  - place_id: 1234567890
+    file_path: "places/start_place.rbxl"
+    publish: true                   # only published by `rblxsync publish` when true
