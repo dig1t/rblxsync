@@ -19,7 +19,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       sha: ${{ steps.commit.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
@@ -62,14 +62,14 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest  # Intel binary cross-compiled on Apple Silicon (Intel macos-13 runners retired)
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
 
@@ -82,35 +82,27 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Package (unix)
+      - name: Stage binary (unix)
         if: runner.os != 'Windows'
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARGET: ${{ matrix.target }}
         run: |
-          dir="rblxsync-v$VERSION-$TARGET"
-          mkdir "$dir"
-          cp "target/$TARGET/release/rblxsync" "$dir/"
-          cp README.md LICENSE "$dir/"
-          tar -czf "$dir.tar.gz" "$dir"
-          echo "ASSET=$dir.tar.gz" >> "$GITHUB_ENV"
+          cp "target/$TARGET/release/rblxsync" "rblxsync-v$VERSION-$TARGET"
+          echo "ASSET=rblxsync-v$VERSION-$TARGET" >> "$GITHUB_ENV"
 
-      - name: Package (windows)
+      - name: Stage binary (windows)
         if: runner.os == 'Windows'
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARGET: ${{ matrix.target }}
         run: |
-          dir="rblxsync-v$VERSION-$TARGET"
-          mkdir "$dir"
-          cp "target/$TARGET/release/rblxsync.exe" "$dir/"
-          cp README.md LICENSE "$dir/"
-          7z a "$dir.zip" "$dir"
-          echo "ASSET=$dir.zip" >> "$GITHUB_ENV"
+          cp "target/$TARGET/release/rblxsync.exe" "rblxsync-v$VERSION-$TARGET.exe"
+          echo "ASSET=rblxsync-v$VERSION-$TARGET.exe" >> "$GITHUB_ENV"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rblxsync-${{ matrix.target }}
           path: ${{ env.ASSET }}
@@ -119,7 +111,7 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
