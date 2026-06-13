@@ -464,9 +464,7 @@ async fn sync_game_passes(
                 .as_u64()
                 .or_else(|| resp["gamePassId"].as_u64())
                 .or_else(|| resp["gamePassId"].as_str().and_then(|s| s.parse().ok()))
-                .ok_or_else(|| {
-                    anyhow!("Created game pass has no ID. Response: {}", resp)
-                })?;
+                .ok_or_else(|| anyhow!("Created game pass has no ID. Response: {}", resp))?;
             info!(
                 "  [CREATED] Game Pass '{}' (ID: {}) - created with: name, description, price{}",
                 pass.name,
