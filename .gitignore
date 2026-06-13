@@ -19,3 +19,7 @@ rblxsync-lock.yml
 
 # Generated Luau config files (from output_path option)
 Config.luau
+
+# Local AI assistant instructions — never commit
+CLAUDE.md
+AGENTS.md
