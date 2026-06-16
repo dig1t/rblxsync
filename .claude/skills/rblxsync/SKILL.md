@@ -29,10 +29,22 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
   **Commit it.** Never hand-edit it — it is overwritten on the next sync.
 - **`Config.luau`** (only if `output_path` is set) = generated, typed Luau module
   of all resource IDs. Game code `require`s it. Never hand-edit it.
-- **Matching is by name.** Renaming a resource in the YAML makes rblxsync think
-  it is a *new* resource (it creates a second one) rather than renaming the old.
-  To rename, change it in Roblox/lock state, not just the YAML. Flag this to the
-  user before any rename.
+- **Matching is by name (case-insensitive).** This is the one thing most likely
+  to bite a user. Renaming a Game Pass / Developer Product / Badge in the YAML
+  does **not** rename the existing resource — rblxsync no longer finds a match by
+  the new name, so it **creates a brand-new resource and orphans the old one**.
+  Example: changing a Developer Product from `"100 coins"` to `"100 coins [SALE]"`
+  creates a *second* product; the original keeps existing (and keeps selling).
+  - **Why this is bad:** duplicate resources, wasted Robux on duplicate badges,
+    and **split/broken analytics & sales history** — each ID accrues its own
+    purchase data, so renaming silently fragments the numbers you report on.
+  - **Only a pure case change** (`"vip pass"` → `"VIP Pass"`) is treated as an
+    update, because matching ignores case. Any other text change = new resource.
+  - **To actually rename:** change the display name in Roblox (Creator Hub),
+    keep the YAML `name` matching it, or edit the name in `rblxsync-lock.yml`'s
+    existing entry so the ID is preserved. Do **not** just edit the YAML name.
+  - **Always flag a rename to the user before syncing it**, and prefer
+    `--dry-run` to prove no unexpected "create" appears in the diff.
 
 ## Golden rules
 
@@ -44,7 +56,13 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
    `rblxsync --config prod.yml run` ✅ — `rblxsync run --config prod.yml` ✗.
 4. **Creating a badge costs 100 Robux each.** Confirm with the user before a sync
    that adds new badges.
-5. **Confirm before destructive or paid actions**: new badges (Robux), publishing
+5. **Never rename a resource by editing only the YAML `name`.** Matching is by
+   name, so a rename creates a duplicate and orphans the original (fragmenting its
+   sales/analytics — see the Mental model). If a user wants to rename a Game Pass,
+   Developer Product, or Badge, warn them first and rename it in Roblox + lock
+   state, not just the config. In a `--dry-run` diff, treat an unexpected "create"
+   for a resource that already exists as a rename mistake.
+6. **Confirm before destructive or paid actions**: new badges (Robux), publishing
    places (goes live), any first real `run`.
 
 ## Setup workflow (new project)
