@@ -33,6 +33,135 @@ pub fn validate(config: &RblxSyncConfig) -> Result<()> {
     Ok(())
 }
 
+/// Collect the lowercased `name` values from a list response, tolerating a
+/// failed listing only in dry-run (where bad creds shouldn't block a preview).
+fn remote_name_set(
+    list: Result<crate::api::ListResponse<serde_json::Value>>,
+    dry_run: bool,
+    kind: &str,
+) -> Result<HashSet<String>> {
+    match list {
+        Ok(r) => Ok(r
+            .data
+            .iter()
+            .filter_map(|i| i["name"].as_str().map(|s| s.to_lowercase()))
+            .collect()),
+        Err(e) if dry_run => {
+            warn!(
+                "Preflight: could not list {} (dry-run; assuming none exist): {}",
+                kind, e
+            );
+            Ok(HashSet::new())
+        }
+        Err(e) => Err(e.context(format!("Preflight: failed to list {}", kind))),
+    }
+}
+
+/// Read-only preflight run before any mutation. Validates everything knowable up
+/// front so a destructive `run` never half-applies: referenced icon files must
+/// exist, icons on passes/products need a `creator`, and a badge that would be
+/// CREATED needs an icon (Roblox rejects creation without one) plus a payment
+/// source. Aborts listing every problem; makes no changes.
+async fn preflight(
+    universe_id: u64,
+    config: &RblxSyncConfig,
+    state: &SyncState,
+    client: &RobloxClient,
+    dry_run: bool,
+) -> Result<()> {
+    let assets_dir = Path::new(&config.assets_dir);
+    let mut errors: Vec<String> = Vec::new();
+
+    // Passes / products: a referenced icon file must exist, and uploading any
+    // icon needs a configured creator.
+    for p in &config.game_passes {
+        if let Some(icon) = &p.icon {
+            let path = assets_dir.join(icon);
+            if !path.exists() {
+                errors.push(format!(
+                    "Game pass '{}': icon file not found at {}",
+                    p.name,
+                    path.display()
+                ));
+            } else if config.creator.is_none() {
+                errors.push(format!(
+                    "Game pass '{}': has an icon but no `creator:` is configured (required to upload assets)",
+                    p.name
+                ));
+            }
+        }
+    }
+    for p in &config.developer_products {
+        if let Some(icon) = &p.icon {
+            let path = assets_dir.join(icon);
+            if !path.exists() {
+                errors.push(format!(
+                    "Developer product '{}': icon file not found at {}",
+                    p.name,
+                    path.display()
+                ));
+            } else if config.creator.is_none() {
+                errors.push(format!(
+                    "Developer product '{}': has an icon but no `creator:` is configured (required to upload assets)",
+                    p.name
+                ));
+            }
+        }
+    }
+
+    // Badges: need the live list to know which entries would be CREATED.
+    let badge_remote = remote_name_set(
+        client.list_badges(universe_id, None).await,
+        dry_run,
+        "badges",
+    )?;
+    for b in &config.badges {
+        if let Some(icon) = &b.icon {
+            let path = assets_dir.join(icon);
+            if !path.exists() {
+                errors.push(format!(
+                    "Badge '{}': icon file not found at {}",
+                    b.name,
+                    path.display()
+                ));
+            }
+        }
+        let is_new = b.id.is_none()
+            && state.find_badge_by_name(&b.name).is_none()
+            && !badge_remote.contains(&b.name.to_lowercase());
+        if is_new {
+            if b.icon.is_none() {
+                errors.push(format!(
+                    "Badge '{}': new badges require an `icon:` - Roblox rejects creation without one",
+                    b.name
+                ));
+            }
+            if config.badge_payment_source.is_none() {
+                errors.push(format!(
+                    "Badge '{}': new badges cost 100 Robux and require `badge_payment_source: \"user\"` or `\"group\"`",
+                    b.name
+                ));
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        let joined = errors
+            .iter()
+            .map(|e| format!("  - {}", e))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "Preflight found {} problem(s); no changes were made:\n{}",
+            errors.len(),
+            joined
+        ));
+    }
+
+    info!("Preflight checks passed.");
+    Ok(())
+}
+
 pub async fn run(
     config: RblxSyncConfig,
     mut state: SyncState,
@@ -47,6 +176,11 @@ pub async fn run(
     validate(&config)?;
 
     let universe_id = config.universe.id;
+
+    // Preflight: catch everything knowable BEFORE any mutation, so a failed
+    // run never half-applies (no resources created, no Robux spent on a config
+    // that can't fully succeed). Runs in dry-run too, so previews surface these.
+    preflight(universe_id, &config, &state, &client, dry_run).await?;
 
     // Update Universe Settings (requires cookie client)
     if config.universe.has_settings() {
@@ -2121,6 +2255,119 @@ mod tests {
             "msg should mention the icon requirement: {}",
             msg
         );
+    }
+
+    // Preflight aborts before any mutation when a to-be-created badge has no icon.
+    #[tokio::test]
+    async fn preflight_flags_new_badge_without_icon() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/badges"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"badges": [], "nextPageCursor": null})),
+            )
+            .mount(&server)
+            .await;
+
+        let mut config = base_config();
+        config.badge_payment_source = Some("user".to_string());
+        config.badges = vec![BadgeConfig {
+            id: None,
+            name: "Newbie".to_string(),
+            description: None,
+            icon: None,
+            is_enabled: None,
+        }];
+        let state = SyncState::default();
+
+        let err = preflight(1, &config, &state, &client(&server), false)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Newbie"), "msg: {}", msg);
+        assert!(msg.to_lowercase().contains("icon"), "msg: {}", msg);
+    }
+
+    // Preflight flags a pass/product icon when no creator is configured.
+    #[tokio::test]
+    async fn preflight_flags_icon_without_creator() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/badges"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"badges": [], "nextPageCursor": null})),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("vip.png"), b"img").unwrap();
+        let mut config = base_config();
+        config.assets_dir = dir.path().to_string_lossy().to_string();
+        config.creator = None;
+        config.game_passes = vec![GamePassConfig {
+            id: None,
+            name: "VIP".to_string(),
+            description: None,
+            price: Some(100),
+            icon: Some("vip.png".to_string()),
+            is_for_sale: None,
+        }];
+        let state = SyncState::default();
+
+        let err = preflight(1, &config, &state, &client(&server), false)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("VIP"), "msg: {}", msg);
+        assert!(msg.to_lowercase().contains("creator"), "msg: {}", msg);
+    }
+
+    // Preflight passes for a fully-valid config (no mutation needed).
+    #[tokio::test]
+    async fn preflight_passes_for_valid_config() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/badges"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"badges": [], "nextPageCursor": null})),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("vip.png"), b"img").unwrap();
+        std::fs::write(dir.path().join("badge.png"), b"img").unwrap();
+        let mut config = base_config();
+        config.assets_dir = dir.path().to_string_lossy().to_string();
+        config.creator = Some(crate::config::CreatorConfig {
+            id: "1".to_string(),
+            creator_type: "user".to_string(),
+        });
+        config.badge_payment_source = Some("user".to_string());
+        config.game_passes = vec![GamePassConfig {
+            id: None,
+            name: "VIP".to_string(),
+            description: None,
+            price: Some(100),
+            icon: Some("vip.png".to_string()),
+            is_for_sale: None,
+        }];
+        config.badges = vec![BadgeConfig {
+            id: None,
+            name: "Win".to_string(),
+            description: None,
+            icon: Some("badge.png".to_string()),
+            is_enabled: None,
+        }];
+        let state = SyncState::default();
+
+        preflight(1, &config, &state, &client(&server), false)
+            .await
+            .unwrap();
     }
 
     // --- import command tests ---

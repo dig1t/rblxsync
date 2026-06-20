@@ -39,8 +39,15 @@ Syncs universe settings + game passes, developer products, badges. Idempotent
 (match by `id` when an entry has one, else by name; create/PATCH). Icons re-upload
 only when their local SHA-256 differs from the lock file.
 
+- **Preflight gate:** before any mutation (in both real and `--dry-run` mode)
+  `run` validates everything knowable up front and **aborts listing every
+  problem if any** — so a failed run never half-applies (no resources created,
+  no Robux spent). It checks: referenced icon files exist; passes/products with
+  an icon have a `creator:`; a badge that would be **created** has an icon
+  (Roblox requires one) and a `badge_payment_source`.
 - `--dry-run`: previews changes, makes **no** mutating HTTP calls, does **not**
-  write state, does **not** write `Config.luau`. Always run this first.
+  write state, does **not** write `Config.luau`. Runs the preflight too, so a
+  preview surfaces the errors above. Always run this first.
 - Requires `ROBLOX_COOKIE` if any `universe.*` setting is present (see below).
 - On success writes `rblxsync-lock.yml`, and regenerates `Config.luau` if
   `output_path` is set.

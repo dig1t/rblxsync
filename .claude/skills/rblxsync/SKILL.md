@@ -56,6 +56,10 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
 
 1. **Never run a mutating sync without previewing first.** Always do
    `rblxsync run --dry-run` and show the user the diff before `rblxsync run`.
+   `run` preflights before any mutation (in both modes) and aborts — without
+   creating anything — if a referenced icon file is missing, a pass/product icon
+   has no `creator:`, or a new badge lacks an icon or `badge_payment_source`. So
+   a dry-run surfaces those config errors safely.
 2. **Never commit, print, or paste `ROBLOX_API_KEY` or `ROBLOX_COOKIE`.** They
    live in a gitignored `.env` (local) or CI secrets. Treat them like passwords.
 3. **The `--config` flag is global and goes BEFORE the subcommand.**
