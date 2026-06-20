@@ -222,10 +222,10 @@ pub async fn run(
     )
     .await?;
 
-    // Save state
+    // Save state next to the config (where it is also loaded from), so a
+    // `--config sub/x.yml` keeps the lock file beside it. Atomic via state.save.
     if !dry_run {
-        let root = std::env::current_dir()?;
-        state.save(&root)?;
+        state.save(lock_root(config_path))?;
     } else {
         info!("Dry Run: Would save state.");
     }
@@ -269,6 +269,15 @@ pub async fn publish(config: RblxSyncConfig, client: RobloxClient) -> Result<()>
     Ok(())
 }
 
+/// Directory the lock file (`rblxsync-lock.yml`) lives in: the config file's
+/// parent, falling back to the current directory for a bare filename.
+fn lock_root(config_path: &Path) -> &Path {
+    config_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 /// Immediately write a newly-created resource's id back into its `rblxsync.yml`
 /// entry, via a surgical comment-preserving insert ([`yml_edit::insert_id`]).
 ///
@@ -287,12 +296,8 @@ fn write_back_id(config_path: &Path, section: &str, name: &str, id: u64) -> Resu
         .with_context(|| format!("Failed to read config for id write-back: {:?}", config_path))?;
 
     match yml_edit::insert_id(&yaml, section, name, id) {
-        Some(updated) => std::fs::write(config_path, updated).with_context(|| {
-            format!(
-                "Failed to write config after id write-back: {:?}",
-                config_path
-            )
-        })?,
+        Some(updated) => crate::fsutil::atomic_write(config_path, updated.as_bytes())
+            .context("Failed to write config after id write-back")?,
         None => warn!(
             "Could not write id for \"{}\" into {:?} - run `rblxsync import` to backfill ids",
             name, config_path
@@ -712,7 +717,7 @@ pub async fn import(
 
     let yaml =
         serde_yaml::to_string(&merged_config).context("Failed to serialize merged config")?;
-    std::fs::write(config_path, yaml)
+    crate::fsutil::atomic_write(config_path, yaml.as_bytes())
         .with_context(|| format!("Failed to write config to {:?}", config_path))?;
     merged_state
         .save(root)
@@ -1037,6 +1042,7 @@ async fn sync_game_passes(
         // True when the entry has an explicit id but no lockfile state yet
         // (adopting a known remote resource): reconcile all configured fields.
         let id_adopt = pass.id.is_some() && state_entry.is_none();
+        let mut did_create = false;
         let mut asset_id = None;
         let mut icon_hash = None;
         let mut icon_changed = false;
@@ -1153,6 +1159,7 @@ async fn sync_game_passes(
             // explicit id never reach this branch), so a duplicate can never be
             // created even if a later step fails before state is saved.
             write_back_id(config_path, "game_passes", &pass.name, new_id)?;
+            did_create = true;
             new_id
         };
 
@@ -1245,6 +1252,13 @@ async fn sync_game_passes(
                 icon_hash.clone(),
                 asset_id,
             );
+            // Persist the lock file as soon as a resource is created, so its
+            // full state survives a later failure (the yml already has the id).
+            if did_create {
+                state
+                    .save(lock_root(config_path))
+                    .context("Failed to save lock file after create")?;
+            }
         }
     }
 
@@ -1309,6 +1323,7 @@ async fn sync_developer_products(
         };
         let state_entry = state_lookup.map(|(_, s)| s);
         let id_adopt = prod.id.is_some() && state_entry.is_none();
+        let mut did_create = false;
         let mut asset_id = None;
         let mut icon_hash = None;
         let mut icon_changed = false;
@@ -1407,6 +1422,7 @@ async fn sync_developer_products(
                 if prod.icon.is_some() { ", icon" } else { "" });
             created_count += 1;
             write_back_id(config_path, "developer_products", &prod.name, new_id)?;
+            did_create = true;
             new_id
         };
 
@@ -1493,6 +1509,11 @@ async fn sync_developer_products(
                 icon_hash,
                 asset_id,
             );
+            if did_create {
+                state
+                    .save(lock_root(config_path))
+                    .context("Failed to save lock file after create")?;
+            }
         }
     }
 
@@ -1548,6 +1569,7 @@ async fn sync_badges(
         };
         let state_entry = state_lookup.map(|(_, s)| s);
         let id_adopt = badge.id.is_some() && state_entry.is_none();
+        let mut did_create = false;
         let mut changes: Vec<&str> = Vec::new();
 
         // Check for metadata changes (name, description, is_enabled)
@@ -1717,6 +1739,7 @@ async fn sync_badges(
             // get through a wave.
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             write_back_id(config_path, "badges", &badge.name, new_id)?;
+            did_create = true;
             new_id
         };
 
@@ -1787,6 +1810,11 @@ async fn sync_badges(
                 icon_hash.clone(),
                 None,
             );
+            if did_create {
+                state
+                    .save(lock_root(config_path))
+                    .context("Failed to save lock file after create")?;
+            }
         }
     }
 
