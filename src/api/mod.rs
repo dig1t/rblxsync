@@ -152,8 +152,32 @@ impl RobloxClient {
         serde_json::from_str(&text).context(format!("Failed to parse response: {}", text))
     }
 
+    // --- Universe (Open Cloud v2, read-only) ---
+
+    /// Fetches a universe's metadata via the Open Cloud v2 endpoint
+    /// `GET {base_url}/cloud/v2/universes/{universe_id}`.
+    ///
+    /// Returns the raw JSON object. Fields the import command reads:
+    /// - `displayName` (string): the universe name
+    /// - `description` (string)
+    /// - `rootPlace` (string): resource path `universes/{u}/places/{placeId}`,
+    ///   used by `list_places` to recover the root place ID.
+    ///
+    /// Authenticated with `x-api-key` (no cookie required for reads).
+    pub async fn get_universe(&self, universe_id: u64) -> Result<serde_json::Value> {
+        let url = format!("{}/cloud/v2/universes/{}", self.base_url, universe_id);
+        log::debug!("Fetching universe at: {}", url);
+        self.execute(self.request(Method::GET, &url))
+            .await
+            .context("Failed to fetch universe")
+    }
+
     // --- Game Passes ---
 
+    /// Lists game passes for a universe (thin list endpoint).
+    ///
+    /// Note: this list does NOT reliably include `description` / `isForSale`.
+    /// For import, fetch each pass's full detail with [`get_game_pass`].
     pub async fn list_game_passes(
         &self,
         universe_id: u64,
@@ -254,6 +278,32 @@ impl RobloxClient {
             self.request(Method::PATCH, &url).multipart(form)
         })
         .await
+    }
+
+    /// Fetches a single game pass's full detail via
+    /// `GET {base_url}/game-passes/v1/universes/{universe_id}/game-passes/{game_pass_id}/creator`.
+    ///
+    /// Unlike the thin [`list_game_passes`] response, this is documented to
+    /// include the fields the import command needs:
+    /// - `gamePassId` (integer)
+    /// - `name` (string)
+    /// - `description` (string)
+    /// - `isForSale` (boolean)
+    /// - `iconAssetId` (integer)
+    /// - `priceInformation` (object, nullable): `{ defaultPriceInRobux, enabledFeatures }`
+    pub async fn get_game_pass(
+        &self,
+        universe_id: u64,
+        game_pass_id: u64,
+    ) -> Result<serde_json::Value> {
+        let url = format!(
+            "{}/game-passes/v1/universes/{}/game-passes/{}/creator",
+            self.base_url, universe_id, game_pass_id
+        );
+        log::debug!("Fetching game pass detail at: {}", url);
+        self.execute(self.request(Method::GET, &url))
+            .await
+            .context("Failed to fetch game pass detail")
     }
 
     // --- Developer Products ---
@@ -667,6 +717,44 @@ impl RobloxClient {
     }
 
     // --- Places ---
+
+    /// Returns the place IDs belonging to a universe.
+    ///
+    /// Endpoint surprise: Open Cloud (x-api-key) has **no** "list all places in
+    /// a universe" endpoint. `cloud/v2/.../places/{place_id}` only fetches a
+    /// single known place, and `develop.roblox.com/v1/universes/{id}/places`
+    /// requires cookie auth (not the API key this client holds). The only
+    /// place data reachable with the API key is the universe's `rootPlace`
+    /// (see [`get_universe`]), so this returns the root place ID (a single-
+    /// element vec, or empty if the universe has no `rootPlace`).
+    ///
+    /// The `rootPlace` is a resource path `universes/{u}/places/{placeId}`;
+    /// the place ID is the final path segment.
+    pub async fn list_places(&self, universe_id: u64) -> Result<Vec<u64>> {
+        let universe = self.get_universe(universe_id).await?;
+        let root_place = universe.get("rootPlace").and_then(|v| v.as_str());
+        let Some(path) = root_place else {
+            return Ok(Vec::new());
+        };
+        let place_id = path
+            .rsplit('/')
+            .next()
+            .and_then(|seg| seg.parse::<u64>().ok())
+            .ok_or_else(|| anyhow!("Could not parse place ID from rootPlace path: {}", path))?;
+        Ok(vec![place_id])
+    }
+
+    /// Fetch a single place via Open Cloud (`cloud/v2`). Universe-scoped, so a
+    /// place id that does not belong to `universe_id` returns a 404 — this is
+    /// how `import` validates user-supplied `--place-id` values. Returns the
+    /// `Place` resource (`displayName`, `description`, `root`, ...).
+    pub async fn get_place(&self, universe_id: u64, place_id: u64) -> Result<serde_json::Value> {
+        let url = format!(
+            "{}/cloud/v2/universes/{}/places/{}",
+            self.base_url, universe_id, place_id
+        );
+        self.execute(self.request(Method::GET, &url)).await
+    }
 
     pub async fn publish_place(
         &self,
@@ -1118,5 +1206,109 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("publish place"), "msg: {}", msg);
         assert!(msg.contains("400"), "msg: {}", msg);
+    }
+
+    #[tokio::test]
+    async fn get_universe_returns_name_and_description() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cloud/v2/universes/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "path": "universes/1",
+                "displayName": "My Game",
+                "description": "A great game",
+                "rootPlace": "universes/1/places/42"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client(&server).get_universe(1).await.unwrap();
+        assert_eq!(result["displayName"], "My Game");
+        assert_eq!(result["description"], "A great game");
+        assert_eq!(result["rootPlace"], "universes/1/places/42");
+    }
+
+    #[tokio::test]
+    async fn get_universe_non_2xx_returns_err() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cloud/v2/universes/1"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("no universe"))
+            .mount(&server)
+            .await;
+
+        let err = client(&server).get_universe(1).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("fetch universe"), "msg: {}", msg);
+    }
+
+    #[tokio::test]
+    async fn get_game_pass_returns_detail_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/game-passes/v1/universes/1/game-passes/2/creator"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "gamePassId": 2,
+                "name": "VIP",
+                "description": "VIP perks",
+                "isForSale": true,
+                "iconAssetId": 999,
+                "priceInformation": {"defaultPriceInRobux": 100, "enabledFeatures": []}
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client(&server).get_game_pass(1, 2).await.unwrap();
+        assert_eq!(result["gamePassId"], 2);
+        assert_eq!(result["description"], "VIP perks");
+        assert_eq!(result["isForSale"], true);
+        assert_eq!(result["priceInformation"]["defaultPriceInRobux"], 100);
+    }
+
+    #[tokio::test]
+    async fn get_game_pass_non_2xx_returns_err() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/game-passes/v1/universes/1/game-passes/2/creator"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .mount(&server)
+            .await;
+
+        let err = client(&server).get_game_pass(1, 2).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("game pass detail"), "msg: {}", msg);
+    }
+
+    #[tokio::test]
+    async fn list_places_returns_root_place_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cloud/v2/universes/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "displayName": "My Game",
+                "description": "desc",
+                "rootPlace": "universes/1/places/42"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client(&server).list_places(1).await.unwrap();
+        assert_eq!(result, vec![42]);
+    }
+
+    #[tokio::test]
+    async fn list_places_empty_when_no_root_place() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cloud/v2/universes/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "displayName": "My Game",
+                "description": "desc"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client(&server).list_places(1).await.unwrap();
+        assert!(result.is_empty());
     }
 }

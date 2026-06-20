@@ -57,7 +57,8 @@ Negative values and values `> u32::MAX` are rejected at parse time.
 
 | Field | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `name` | string | **Yes** | – | **Match key**, unique case-insensitive. Renaming creates a new pass. |
+| `id` | number (u64) | No | – | Stable Roblox id. When present it is the **authoritative match key** (renaming `name` is safe — PATCHed, never duplicated). Written automatically by `rblxsync import` and by `run` on create. |
+| `name` | string | **Yes** | – | Match key **when no `id` is set** (unique, case-insensitive). For an id-less entry, renaming creates a new pass. |
 | `description` | string | No | – | |
 | `price` | number (u32) | No | `0` on create | Robux. |
 | `icon` | string | No | – | Filename relative to `assets_dir`. Re-uploaded only when its SHA-256 changes. |
@@ -67,7 +68,8 @@ Negative values and values `> u32::MAX` are rejected at parse time.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `name` | string | **Yes** | Match key, unique case-insensitive. |
+| `id` | number (u64) | No | Stable Roblox id. Authoritative match key when present (safe rename). Written by `import` and by `run` on create. |
+| `name` | string | **Yes** | Match key when no `id` is set, unique case-insensitive. |
 | `description` | string | No | |
 | `price` | number (u32) | **Yes** | Robux. **Required** (unlike game passes). |
 | `icon` | string | No | Filename relative to `assets_dir`. |
@@ -77,20 +79,25 @@ Negative values and values `> u32::MAX` are rejected at parse time.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `name` | string | **Yes** | Match key, unique case-insensitive. |
+| `id` | number (u64) | No | Stable Roblox id. Authoritative match key when present (safe rename). Written by `import` and by `run` on create. |
+| `name` | string | **Yes** | Match key when no `id` is set, unique case-insensitive. |
 | `description` | string | No | |
 | `icon` | string | No | Filename relative to `assets_dir`. |
 | `is_enabled` | boolean | No | Mapped to the API `enabled` field on PATCH. |
 
 Creating a badge costs **100 Robux** and needs `badge_payment_source`
 (`"user"` or `"group"`). Confirm with the user before syncing new badges.
+**A new badge also requires an `icon`** — Roblox rejects creation without one
+(`code 11`, "The badge icon is invalid."). rblxsync fails fast with a message
+naming the badge if a to-be-created badge has no valid icon. (Updating an
+existing badge does not require re-supplying the icon.)
 
 ## `places[]`
 
 | Field | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
 | `place_id` | number (u64) | **Yes** | – | Target place ID. |
-| `file_path` | string | **Yes** | – | Path to a `.rbxl` / `.rbxlx` file. |
+| `file_path` | string | **Yes** | – | Path to a `.rbxl` / `.rbxlx` file. `rblxsync import` writes this as `""` (the binary can't be downloaded); fill it in before `publish`. |
 | `publish` | boolean | No | `false` | Only `publish: true` places are published by `rblxsync publish`. |
 
 ## Validation (`rblxsync validate`)
@@ -101,7 +108,9 @@ badges. Always validate before a real sync.
 
 ## Duplicate-name pitfall
 
-Because matching is case-insensitive by name, two entries like `"VIP Pass"` and
+Because name matching is case-insensitive, two entries like `"VIP Pass"` and
 `"vip pass"` in the same list are a hard validation error. Across the live
 account, a name that already exists on Roblox is updated rather than duplicated;
-a name that doesn't exist is created.
+a name that doesn't exist is created. Setting a stable `id` on an entry sidesteps
+the name trap entirely: matching is then by `id`, so the `name` can be edited
+freely. `rblxsync import` fills in these ids for you.

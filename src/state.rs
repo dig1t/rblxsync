@@ -73,7 +73,7 @@ impl SyncState {
         }
 
         let content = serde_yaml::to_string(self)?;
-        fs::write(state_path, content)?;
+        crate::fsutil::atomic_write(&state_path, content.as_bytes())?;
         Ok(())
     }
 

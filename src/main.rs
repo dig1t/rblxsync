@@ -40,6 +40,16 @@ enum Commands {
         #[arg(long)]
         lua: bool,
     },
+    /// Import existing experience metadata into rblxsync.yml and the lock file
+    Import {
+        /// Universe ID to import (falls back to universe.id in an existing config)
+        #[arg(long)]
+        universe_id: Option<u64>,
+        /// Additional place IDs to import (repeatable). The API key can only
+        /// auto-discover the root place; pass --place-id for each extra place.
+        #[arg(long = "place-id")]
+        place_id: Vec<u64>,
+    },
 }
 
 #[tokio::main]
@@ -130,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
                 None
             };
 
-            commands::run(config, state, client, cookie_client, dry_run).await?;
+            commands::run(config, state, client, cookie_client, dry_run, config_path).await?;
         }
         Commands::Publish => {
             let config = RblxSyncConfig::load(Path::new(&args.config))?;
@@ -139,6 +149,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Export { output, lua } => {
             let config = RblxSyncConfig::load(Path::new(&args.config))?;
             commands::export(config, client, output, lua).await?;
+        }
+        Commands::Import {
+            universe_id,
+            place_id,
+        } => {
+            commands::import(client, Path::new(&args.config), universe_id, place_id).await?;
         }
         Commands::Validate => unreachable!(), // Handled above
     }
