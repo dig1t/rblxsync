@@ -92,7 +92,7 @@ return {
 }
 ```
 
-### `import [--universe-id ID] [--place-id ID]…`
+### `import [--universe-id ID] [--place-id ID]… [--badge-id ID]…`
 
 Pulls a live experience's metadata **down** into `rblxsync.yml` **and**
 `rblxsync-lock.yml` — the opposite direction of `run`. Use it to adopt rblxsync on
@@ -118,6 +118,11 @@ an existing game, or to absorb a resource rblxsync doesn't know about yet. Unlik
   also **verifies the place belongs to this experience** — an id from a different
   experience (or a typo) is warned and skipped, not imported. `.rbxl` files still
   can't be downloaded, so set each `file_path` manually before publishing.
+- **Badges:** Roblox's badge LIST endpoint **omits DISABLED badges**, so they
+  aren't auto-imported. Pass `--badge-id <id>` (repeatable) to pull each disabled
+  badge in by id — it's fetched via the badge detail endpoint (which does return
+  disabled badges) and **verified to belong to this experience** (mismatched id →
+  warned and skipped). Import warns when run without `--badge-id` as a reminder.
 - Needs only `ROBLOX_API_KEY` (no cookie).
 
 ## Environment variables
@@ -154,7 +159,7 @@ against `develop.roblox.com`. The API key needs these scopes:
 | --- | --- | --- |
 | Game Passes | read + write | `game-passes/v1/universes/{uid}/game-passes` |
 | Developer Products | read + write | `developer-products/v2/universes/{uid}/developer-products` |
-| Badges | read + create/manage | list via `badges.roblox.com`; create/update/icon via legacy `legacy-badges` / `legacy-publish` |
+| Badges | read + create/manage | list via `badges.roblox.com/v1/universes/{uid}/badges` (**omits disabled badges**); `import --badge-id` reads `badges.roblox.com/v1/badges/{id}` (returns disabled too); create/update/icon via legacy `legacy-badges` / `legacy-publish` |
 | Assets (icons) | upload | `POST /assets/v1/assets` (multipart), polled at `GET /assets/v1/{operation}` |
 | Places | publish | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
 | Universe / Places (import) | read | `GET /cloud/v2/universes/{uid}` and `GET /cloud/v2/universes/{uid}/places/{placeId}` |

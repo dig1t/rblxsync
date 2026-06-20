@@ -756,6 +756,16 @@ impl RobloxClient {
         self.execute(self.request(Method::GET, &url)).await
     }
 
+    /// Fetch a single badge by id (`badges.roblox.com/v1/badges/{id}`). Unlike
+    /// the universe badge LIST, this returns DISABLED badges too — the list
+    /// endpoint silently omits them. `import --badge-id` uses this to adopt a
+    /// disabled badge by id. Response includes `name`, `description`, `enabled`,
+    /// and `awardingUniverse.id` (used to verify it belongs to the universe).
+    pub async fn get_badge(&self, badge_id: u64) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/badges/{}", self.badges_base_url, badge_id);
+        self.execute(self.request(Method::GET, &url)).await
+    }
+
     pub async fn publish_place(
         &self,
         universe_id: u64,

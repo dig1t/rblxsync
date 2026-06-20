@@ -359,6 +359,7 @@ pub async fn import(
     config_path: &Path,
     universe_id_override: Option<u64>,
     place_ids: Vec<u64>,
+    badge_ids: Vec<u64>,
 ) -> Result<()> {
     // Load existing config + state if present.
     let existing_config: Option<RblxSyncConfig> = if config_path.exists() {
@@ -466,6 +467,40 @@ pub async fn import(
             is_for_sale: None,
             is_enabled,
         });
+    }
+    // Roblox's badge LIST omits disabled badges, so pull any --badge-id in by id
+    // via the detail endpoint (which does return disabled badges). Each is
+    // validated to belong to this universe (a wrong id/universe is skipped).
+    for bid in &badge_ids {
+        if remote_badges.iter().any(|b| b.id == *bid) {
+            continue;
+        }
+        match client.get_badge(*bid).await {
+            Ok(badge) => {
+                let badge_universe = badge["awardingUniverse"]["id"].as_u64();
+                if badge_universe != Some(universe_id) {
+                    warn!(
+                        "Skipping badge {}: it belongs to experience {:?}, not {} - mismatched badge.",
+                        bid, badge_universe, universe_id
+                    );
+                    continue;
+                }
+                let name = badge["name"].as_str().unwrap_or_default().to_string();
+                info!("  Importing badge {} (\"{}\")", bid, name);
+                remote_badges.push(RemoteResource {
+                    id: *bid,
+                    name,
+                    description: badge["description"].as_str().map(|s| s.to_string()),
+                    price: None,
+                    is_for_sale: None,
+                    is_enabled: badge["enabled"].as_bool(),
+                });
+            }
+            Err(e) => warn!("Skipping badge {}: not found or unreadable: {}", bid, e),
+        }
+    }
+    if badge_ids.is_empty() {
+        warn!("Roblox's API does not list DISABLED badges, so they are not auto-imported. Re-run with `--badge-id <id>` for any disabled badge you want rblxsync to manage.");
     }
 
     // Places: the API key can only auto-discover the root place. Any extra
@@ -1661,6 +1696,15 @@ async fn sync_badges(
             remote_entry.is_some(),
             if is_new { "CREATE" } else { "adopt/patch" }
         );
+        // Roblox's badge list omits DISABLED badges, so a same-named disabled
+        // badge already on Roblox is invisible here and we'd create a duplicate.
+        // Warn so the user can adopt it by id instead (run `import --badge-id`).
+        if is_new {
+            warn!(
+                "Badge '{}' looks new and will be created. NOTE: Roblox cannot list disabled badges, so if a badge with this name already exists but is disabled, this WILL create a duplicate. To adopt the existing one, add its `id:` to rblxsync.yml (e.g. via `rblxsync import --badge-id <id>`).",
+                badge.name
+            );
+        }
 
         let id = if let Some(cid) = badge.id {
             cid
@@ -2502,7 +2546,9 @@ mod tests {
         )
         .unwrap();
 
-        import(client(&server), &cfg, None, vec![]).await.unwrap();
+        import(client(&server), &cfg, None, vec![], vec![])
+            .await
+            .unwrap();
 
         let written = std::fs::read_to_string(&cfg).unwrap();
         let parsed: RblxSyncConfig = serde_yaml::from_str(&written).unwrap();
@@ -2536,7 +2582,9 @@ mod tests {
         )
         .unwrap();
 
-        import(client(&server), &cfg, None, vec![]).await.unwrap();
+        import(client(&server), &cfg, None, vec![], vec![])
+            .await
+            .unwrap();
 
         let parsed: RblxSyncConfig =
             serde_yaml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -2567,7 +2615,9 @@ mod tests {
         state.update_game_pass(999, "Stale".to_string(), None, Some(10), None, None, None);
         state.save(dir.path()).unwrap();
 
-        import(client(&server), &cfg, None, vec![]).await.unwrap();
+        import(client(&server), &cfg, None, vec![], vec![])
+            .await
+            .unwrap();
 
         let new_state = SyncState::load(dir.path()).unwrap();
         assert!(!new_state.game_passes.contains_key(&999));
@@ -2593,11 +2643,15 @@ mod tests {
         std::fs::write(&cfg, "universe:\n  id: 1\n").unwrap();
 
         // First import -> creates rblxsync.old.yml
-        import(client(&server), &cfg, None, vec![]).await.unwrap();
+        import(client(&server), &cfg, None, vec![], vec![])
+            .await
+            .unwrap();
         assert!(dir.path().join("rblxsync.old.yml").exists());
 
         // Second import -> .old taken, so .old1.yml
-        import(client(&server), &cfg, None, vec![]).await.unwrap();
+        import(client(&server), &cfg, None, vec![], vec![])
+            .await
+            .unwrap();
         assert!(dir.path().join("rblxsync.old1.yml").exists());
     }
 
@@ -2621,7 +2675,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("rblxsync.yml");
 
-        import(client(&server), &cfg, Some(1), vec![])
+        import(client(&server), &cfg, Some(1), vec![], vec![])
             .await
             .unwrap();
 
@@ -2654,7 +2708,9 @@ mod tests {
         )
         .unwrap();
 
-        import(client(&server), &cfg, None, vec![]).await.unwrap();
+        import(client(&server), &cfg, None, vec![], vec![])
+            .await
+            .unwrap();
 
         let parsed: RblxSyncConfig =
             serde_yaml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -2695,7 +2751,9 @@ mod tests {
         )
         .unwrap();
 
-        import(client(&server), &cfg, None, vec![]).await.unwrap();
+        import(client(&server), &cfg, None, vec![], vec![])
+            .await
+            .unwrap();
 
         assert!(out.exists(), "Config.luau should be generated by import");
         let content = std::fs::read_to_string(&out).unwrap();
@@ -2747,7 +2805,7 @@ mod tests {
         let cfg = dir.path().join("rblxsync.yml");
         std::fs::write(&cfg, "universe:\n  id: 1\n").unwrap();
 
-        import(client(&server), &cfg, None, vec![888, 999, 555])
+        import(client(&server), &cfg, None, vec![888, 999, 555], vec![])
             .await
             .unwrap();
 
@@ -2761,6 +2819,61 @@ mod tests {
         let extra = parsed.places.iter().find(|p| p.place_id == 888).unwrap();
         assert_eq!(extra.file_path, "");
         assert!(!extra.publish);
+    }
+
+    // --badge-id: a disabled badge (omitted from the list) is pulled in by id;
+    // a badge from a different experience is skipped.
+    #[tokio::test]
+    async fn import_badge_id_pulls_disabled_and_skips_mismatch() {
+        let server = MockServer::start().await;
+        mount_universe(
+            &server,
+            None,
+            json!({"data": [], "nextPageCursor": null}),
+            vec![],
+            json!({"developerProducts": [], "nextPageToken": null}),
+            json!({"badges": [], "nextPageCursor": null}), // list omits disabled
+        )
+        .await;
+        // Disabled badge 700 belongs to universe 1 -> imported.
+        Mock::given(method("GET"))
+            .and(path("/v1/badges/700"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 700, "name": "Secret", "description": "hidden", "enabled": false,
+                "awardingUniverse": {"id": 1}
+            })))
+            .mount(&server)
+            .await;
+        // Badge 800 belongs to a different universe -> skipped.
+        Mock::given(method("GET"))
+            .and(path("/v1/badges/800"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 800, "name": "Wrong", "awardingUniverse": {"id": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("rblxsync.yml");
+        std::fs::write(&cfg, "universe:\n  id: 1\n").unwrap();
+
+        import(client(&server), &cfg, None, vec![], vec![700, 800])
+            .await
+            .unwrap();
+
+        let parsed: RblxSyncConfig =
+            serde_yaml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let badge = parsed
+            .badges
+            .iter()
+            .find(|b| b.id == Some(700))
+            .expect("disabled badge should be imported by id");
+        assert_eq!(badge.name, "Secret");
+        assert_eq!(badge.is_enabled, Some(false));
+        assert!(
+            !parsed.badges.iter().any(|b| b.id == Some(800)),
+            "mismatched-universe badge must be skipped"
+        );
     }
 
     // run rename: config entry with id set + changed name issues a PATCH, no create.

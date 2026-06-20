@@ -92,6 +92,14 @@ Creating a badge costs **100 Robux** and needs `badge_payment_source`
 naming the badge if a to-be-created badge has no valid icon. (Updating an
 existing badge does not require re-supplying the icon.)
 
+**Disabled badges are invisible to Roblox's list endpoint.** A badge with
+`is_enabled: false` is **not** returned by the universe badge list, so:
+- `import` can't auto-discover it — pull it in with `rblxsync import --badge-id <id>`.
+- `run` can't dedupe it by name — if a disabled badge already exists but its
+  entry has no `id`, `run` will create a **duplicate**. Always give disabled
+  badges an explicit `id:` (matching is then by id and is safe). `run` warns
+  before creating any badge for this reason.
+
 ## `places[]`
 
 | Field | Type | Required | Default | Notes |
