@@ -103,10 +103,15 @@ SHA-256 hashes. Top-level keys: `universe`, `game_passes`, `developer_products`,
 
 - Re-running `rblxsync run` with an unchanged config is a no-op against Roblox
   (nothing to PATCH, no icon re-upload).
-- Matching is by **name**. Changing a `name:` in the YAML does NOT rename the
-  Roblox resource — rblxsync sees an unknown name and **creates a new one**,
-  leaving the old resource behind. Warn the user before any rename and handle the
-  rename on Roblox's side (or accept the new resource + retire the old).
+- Matching is by a stable **`id`** when the entry has one, otherwise by **name**.
+  - With an `id`, changing the `name:` is a safe rename (matched by id, PATCHed).
+    `rblxsync import` writes ids for existing resources, and `run` stamps the id
+    back into an entry the first time it creates the resource.
+  - For an **id-less** entry, changing `name:` does NOT rename the Roblox resource
+    — rblxsync sees an unknown name and **creates a new one**, leaving the old one
+    behind. Backfill ids (run `rblxsync import`) before renaming, or warn the user
+    and handle the rename on Roblox's side (or accept the new resource + retire the
+    old).
 
 ## Recommended repo hygiene
 

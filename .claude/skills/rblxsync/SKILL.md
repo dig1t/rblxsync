@@ -16,8 +16,9 @@ description: >-
 `rblxsync` is a Rust CLI + GitHub Action that **declaratively** manages Roblox
 experience metadata via the Open Cloud API. One YAML file (`rblxsync.yml`) is the
 source of truth for Universe settings, Game Passes, Developer Products, Badges,
-and Places. Running it is idempotent: resources are matched by **name**
-(case-insensitive), created if missing, updated (PATCH) if present.
+and Places. Running it is idempotent: resources are matched by a stable **`id`**
+when the entry has one (otherwise by **name**, case-insensitive), created if
+missing, updated (PATCH) if present.
 
 Use this skill to set rblxsync up in a user's Roblox project, author/edit their
 config, run syncs safely, and wire the generated `Config.luau` into game code.
@@ -29,22 +30,27 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
   **Commit it.** Never hand-edit it — it is overwritten on the next sync.
 - **`Config.luau`** (only if `output_path` is set) = generated, typed Luau module
   of all resource IDs. Game code `require`s it. Never hand-edit it.
-- **Matching is by name (case-insensitive).** This is the one thing most likely
-  to bite a user. Renaming a Game Pass / Developer Product / Badge in the YAML
-  does **not** rename the existing resource — rblxsync no longer finds a match by
-  the new name, so it **creates a brand-new resource and orphans the old one**.
-  Example: changing a Developer Product from `"100 coins"` to `"100 coins [SALE]"`
-  creates a *second* product; the original keeps existing (and keeps selling).
-  - **Why this is bad:** duplicate resources, wasted Robux on duplicate badges,
-    and **split/broken analytics & sales history** — each ID accrues its own
-    purchase data, so renaming silently fragments the numbers you report on.
-  - **Only a pure case change** (`"vip pass"` → `"VIP Pass"`) is treated as an
-    update, because matching ignores case. Any other text change = new resource.
-  - **To actually rename:** change the display name in Roblox (Creator Hub),
-    keep the YAML `name` matching it, or edit the name in `rblxsync-lock.yml`'s
-    existing entry so the ID is preserved. Do **not** just edit the YAML name.
-  - **Always flag a rename to the user before syncing it**, and prefer
-    `--dry-run` to prove no unexpected "create" appears in the diff.
+- **Matching is by `id` when an entry has one, else by name (case-insensitive).**
+  Each Game Pass / Developer Product / Badge entry can carry a stable `id:`. When
+  it does, that id is authoritative — you can rename the display `name` freely and
+  rblxsync matches by id and PATCHes it (no duplicate). `rblxsync import` writes
+  these ids, and `run` writes the new id back into the entry the first time it
+  creates a resource (a surgical edit that preserves your comments).
+  - **The name-trap applies ONLY to entries with no `id` yet.** Renaming the
+    `name` of an id-less entry makes rblxsync **create a brand-new resource and
+    orphan the old one** (it no longer matches by the new name). Example: changing
+    an id-less Developer Product from `"100 coins"` to `"100 coins [SALE]"` creates
+    a *second* product; the original keeps existing (and keeps selling).
+    - **Why this is bad:** duplicate resources, wasted Robux on duplicate badges,
+      and **split/broken analytics & sales history** — each ID accrues its own
+      purchase data, so renaming silently fragments the numbers you report on.
+    - **Only a pure case change** (`"vip pass"` → `"VIP Pass"`) is a safe update
+      for an id-less entry, because matching ignores case.
+  - **To rename safely:** make sure the entry has an `id` first. If it doesn't,
+    run `rblxsync import` to backfill ids from Roblox (or let a normal `run`
+    create + stamp them). Then change the `name`. Always prefer `--dry-run` to
+    prove no unexpected "create" appears in the diff, and flag any rename to the
+    user before syncing.
 
 ## Golden rules
 
@@ -56,12 +62,14 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
    `rblxsync --config prod.yml run` ✅ — `rblxsync run --config prod.yml` ✗.
 4. **Creating a badge costs 100 Robux each.** Confirm with the user before a sync
    that adds new badges.
-5. **Never rename a resource by editing only the YAML `name`.** Matching is by
-   name, so a rename creates a duplicate and orphans the original (fragmenting its
-   sales/analytics — see the Mental model). If a user wants to rename a Game Pass,
-   Developer Product, or Badge, warn them first and rename it in Roblox + lock
-   state, not just the config. In a `--dry-run` diff, treat an unexpected "create"
-   for a resource that already exists as a rename mistake.
+5. **Renames are safe only when the entry has a stable `id`.** With an `id` set,
+   change the `name` freely — rblxsync matches by id and PATCHes. For an **id-less**
+   entry, editing only the `name` creates a duplicate and orphans the original
+   (fragmenting its sales/analytics — see the Mental model). If a user wants to
+   rename an id-less Game Pass, Developer Product, or Badge, run `rblxsync import`
+   to backfill ids first (or warn them and rename in Roblox + lock state). In a
+   `--dry-run` diff, treat an unexpected "create" for a resource that already
+   exists as a rename mistake.
 6. **Confirm before destructive or paid actions**: new badges (Robux), publishing
    places (goes live), any first real `run`.
 
@@ -84,6 +92,16 @@ Run these steps when adding rblxsync to a codebase that doesn't have it yet.
 6. **Apply:** `rblxsync run` once the user approves the preview.
 7. **Commit** `rblxsync.yml` and `rblxsync-lock.yml` (NOT `.env`). If `output_path`
    is set, commit the generated `Config.luau` too.
+
+### Adopting an existing (already-launched) experience
+
+If the game already has live Game Passes / Developer Products / Badges, don't
+hand-transcribe them. After steps 1–2 above, run **`rblxsync import`** (with
+`--universe-id` if there's no config yet) to pull everything down into
+`rblxsync.yml` + `rblxsync-lock.yml` with stable `id`s already filled in. Review
+the generated YAML, then continue from "Preview" (step 5). Import is destructive
+on conflicts (remote wins) but backs up any existing `rblxsync.yml` first. Use the
+same command later to absorb a single resource rblxsync doesn't yet know about.
 
 ## Minimal config
 
@@ -109,6 +127,7 @@ For the full field-by-field schema, defaults, and every gotcha, read
 | `rblxsync run [--dry-run]` | Sync universe settings + game passes, products, badges. Default command. Writes `rblxsync-lock.yml` and (if set) `Config.luau`. |
 | `rblxsync publish` | Publish `.rbxl` places where `publish: true`. Always publishes (no "save"). Does NOT need the cookie. |
 | `rblxsync validate` | Parse + check the YAML (dup names, etc.). No API key, no network. |
+| `rblxsync import [--universe-id ID] [--place-id ID]…` | Pull a live experience's metadata **down** into `rblxsync.yml` + `rblxsync-lock.yml`. For adopting rblxsync on an existing game, or absorbing a resource it doesn't know about yet. **Destructive on conflicts** (remote wins); keeps local-only entries; drops stale lock entries; writes stable `id`s. Backs up the old yml to `rblxsync.old.yml` (then `.old1`…). Icons are NOT imported. The API key only auto-discovers the root place — pass `--place-id` (repeatable) for others; each is validated against the experience id. |
 | `rblxsync export [-o PATH] [--lua]` | One-way snapshot of live resources to a flat Luau/Lua table. NOT a config you can feed back in, and NOT the same shape as `Config.luau`. |
 
 Full command reference, flags, the GitHub Action, environment variables, and

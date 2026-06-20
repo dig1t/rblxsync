@@ -182,6 +182,8 @@ impl UniverseConfig {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GamePassConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub name: String,
     pub description: Option<String>,
     pub price: Option<u32>,
@@ -191,6 +193,8 @@ pub struct GamePassConfig {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DeveloperProductConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub name: String,
     pub description: Option<String>,
     pub price: u32,
@@ -200,6 +204,8 @@ pub struct DeveloperProductConfig {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct BadgeConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub name: String,
     pub description: Option<String>,
     pub icon: Option<String>,
