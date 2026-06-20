@@ -25,7 +25,7 @@ pub fn generate_config(state: &SyncState, universe_id: u64, output_path: &str) -
         }
     }
 
-    std::fs::write(path, &content)?;
+    crate::fsutil::atomic_write(path, content.as_bytes())?;
     info!("Generated config file: {}", output_path);
 
     Ok(())
