@@ -87,6 +87,10 @@ Negative values and values `> u32::MAX` are rejected at parse time.
 
 Creating a badge costs **100 Robux** and needs `badge_payment_source`
 (`"user"` or `"group"`). Confirm with the user before syncing new badges.
+**A new badge also requires an `icon`** — Roblox rejects creation without one
+(`code 11`, "The badge icon is invalid."). rblxsync fails fast with a message
+naming the badge if a to-be-created badge has no valid icon. (Updating an
+existing badge does not require re-supplying the icon.)
 
 ## `places[]`
 

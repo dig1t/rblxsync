@@ -1505,6 +1505,19 @@ async fn sync_badges(
             created_count += 1;
             0
         } else {
+            // Roblox requires an icon to CREATE a badge: the legacy create
+            // endpoint rejects a missing/empty image with code 11 ("The badge
+            // icon is invalid."). Fail early with a clear, badge-named message
+            // instead of forwarding the cryptic 400.
+            if icon_data.is_none() {
+                return Err(anyhow!(
+                    "Badge '{}' cannot be created without an icon - Roblox requires one. \
+                     Set its `icon:` to an existing image file under assets_dir ('{}').",
+                    badge.name,
+                    config.assets_dir
+                ));
+            }
+
             let image_for_create = icon_data
                 .as_ref()
                 .map(|(data, filename, _)| (data.clone(), filename.clone()));
@@ -1526,7 +1539,10 @@ async fn sync_badges(
                     if err_str.contains("Payment source is invalid")
                         || err_str.contains("code\":16")
                     {
-                        error!("Badge creation failed: Payment source is required.");
+                        error!(
+                            "Badge '{}' creation failed: Payment source is required.",
+                            badge.name
+                        );
                         error!("");
                         error!("Creating badges costs 100 Robux. Please add the following to your rblxsync.yml:");
                         error!("");
@@ -1535,10 +1551,19 @@ async fn sync_badges(
                         error!("  badge_payment_source: \"group\"  # Pay from group funds");
                         error!("");
                         return Err(anyhow!(
-                            "Badge creation requires badge_payment_source configuration"
+                            "Badge '{}' creation requires badge_payment_source configuration",
+                            badge.name
                         ));
                     }
-                    return Err(e);
+                    if err_str.contains("badge icon is invalid") || err_str.contains("code\":11") {
+                        return Err(anyhow!(
+                            "Badge '{}' creation failed: Roblox rejected the icon. Provide a valid \
+                             square image (PNG/JPEG, e.g. 512x512) via its `icon:` field. ({})",
+                            badge.name,
+                            e
+                        ));
+                    }
+                    return Err(anyhow!("Badge '{}' creation failed: {}", badge.name, e));
                 }
             };
 
@@ -2042,6 +2067,60 @@ mod tests {
 
         // Dry run must not persist state.
         assert!(state.badges.is_empty());
+    }
+
+    // Creating a new badge without an icon fails early with a clear message that
+    // names the badge (Roblox requires an icon to create a badge).
+    #[tokio::test]
+    async fn create_badge_without_icon_errors_with_badge_name() {
+        let server = MockServer::start().await;
+        // Empty badge list -> the badge is treated as new (create path).
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/badges"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"badges": [], "nextPageCursor": null})),
+            )
+            .mount(&server)
+            .await;
+        // A create POST must never be reached; if it is, fail loudly.
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let mut config = base_config();
+        config.badges = vec![BadgeConfig {
+            id: None,
+            name: "No Icon Badge".to_string(),
+            description: None,
+            icon: None,
+            is_enabled: None,
+        }];
+        let mut state = SyncState::default();
+
+        let mut created = Vec::new();
+        let err = sync_badges(
+            1,
+            &config,
+            &mut state,
+            &client(&server),
+            false,
+            &mut created,
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No Icon Badge"),
+            "msg should name the badge: {}",
+            msg
+        );
+        assert!(
+            msg.to_lowercase().contains("icon"),
+            "msg should mention the icon requirement: {}",
+            msg
+        );
     }
 
     // --- import command tests ---
