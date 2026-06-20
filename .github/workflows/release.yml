@@ -82,24 +82,28 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      # Aftman installs tools from .zip archives, not bare binaries. Each archive
+      # is named per-target; the executable INSIDE is `rblxsync` (`rblxsync.exe`
+      # on Windows) so Aftman resolves it consistently.
       - name: Stage binary (unix)
         if: runner.os != 'Windows'
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARGET: ${{ matrix.target }}
         run: |
-          cp "target/$TARGET/release/rblxsync" "rblxsync-v$VERSION-$TARGET"
-          echo "ASSET=rblxsync-v$VERSION-$TARGET" >> "$GITHUB_ENV"
+          cp "target/$TARGET/release/rblxsync" rblxsync
+          zip "rblxsync-v$VERSION-$TARGET.zip" rblxsync
+          echo "ASSET=rblxsync-v$VERSION-$TARGET.zip" >> "$GITHUB_ENV"
 
       - name: Stage binary (windows)
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARGET: ${{ matrix.target }}
         run: |
-          cp "target/$TARGET/release/rblxsync.exe" "rblxsync-v$VERSION-$TARGET.exe"
-          echo "ASSET=rblxsync-v$VERSION-$TARGET.exe" >> "$GITHUB_ENV"
+          Compress-Archive -Path "target/$env:TARGET/release/rblxsync.exe" -DestinationPath "rblxsync-v$env:VERSION-$env:TARGET.zip"
+          "ASSET=rblxsync-v$env:VERSION-$env:TARGET.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
