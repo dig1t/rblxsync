@@ -190,17 +190,17 @@ pub async fn run(
         }
     }
 
-    // 2. Sync Resources. Each sync records (section, name, new_id) for any
-    // entry it CREATES that had no explicit `id`, so we can write the id back
-    // into the yml afterwards.
-    let mut created: Vec<(&'static str, String, u64)> = Vec::new();
+    // 2. Sync Resources. Each sync writes a newly-created resource's id back
+    // into the yml *immediately* (see write_back_id), so a created resource's
+    // identity is durable even if a later step fails or the lock file is never
+    // written — the next run then matches by id and never makes a duplicate.
     sync_game_passes(
         universe_id,
         &config,
         &mut state,
         &client,
         dry_run,
-        &mut created,
+        config_path,
     )
     .await?;
     sync_developer_products(
@@ -209,7 +209,7 @@ pub async fn run(
         &mut state,
         &client,
         dry_run,
-        &mut created,
+        config_path,
     )
     .await?;
     sync_badges(
@@ -218,7 +218,7 @@ pub async fn run(
         &mut state,
         &client,
         dry_run,
-        &mut created,
+        config_path,
     )
     .await?;
 
@@ -226,10 +226,6 @@ pub async fn run(
     if !dry_run {
         let root = std::env::current_dir()?;
         state.save(&root)?;
-
-        // Write newly-created resource ids back into the yml so future runs
-        // match by id (rename-safe) instead of recreating duplicates.
-        write_back_ids(config_path, &created)?;
     } else {
         info!("Dry Run: Would save state.");
     }
@@ -273,39 +269,35 @@ pub async fn publish(config: RblxSyncConfig, client: RobloxClient) -> Result<()>
     Ok(())
 }
 
-/// Write newly-created resource ids back into the yml at `config_path`.
+/// Immediately write a newly-created resource's id back into its `rblxsync.yml`
+/// entry, via a surgical comment-preserving insert ([`yml_edit::insert_id`]).
 ///
-/// For each `(section, name, id)` recorded during a sync, splice an `id:` line
-/// into that entry via [`yml_edit::insert_id`]. The file is read once and
-/// rewritten once. If an entry can't be located, warn the user to run `import`
-/// to backfill ids (the resource was still created successfully).
-fn write_back_ids(config_path: &Path, created: &[(&'static str, String, u64)]) -> Result<()> {
-    if created.is_empty() {
-        return Ok(());
-    }
+/// Called the instant a resource is created — not batched at the end — so the
+/// yml is the durable record of identity even if the run later fails or the lock
+/// file is never written. Combined with id-first matching, the next run adopts
+/// the resource by id instead of creating a duplicate. If the entry can't be
+/// located, warn (the id was already logged on create); on success the file is
+/// read and rewritten once.
+fn write_back_id(config_path: &Path, section: &str, name: &str, id: u64) -> Result<()> {
     if !config_path.exists() {
         return Ok(());
     }
 
-    let mut yaml = std::fs::read_to_string(config_path)
+    let yaml = std::fs::read_to_string(config_path)
         .with_context(|| format!("Failed to read config for id write-back: {:?}", config_path))?;
 
-    for (section, name, id) in created {
-        match yml_edit::insert_id(&yaml, section, name, *id) {
-            Some(updated) => yaml = updated,
-            None => warn!(
-                "Could not write id for \"{}\" - run `rblxsync import` to backfill ids",
-                name
-            ),
-        }
+    match yml_edit::insert_id(&yaml, section, name, id) {
+        Some(updated) => std::fs::write(config_path, updated).with_context(|| {
+            format!(
+                "Failed to write config after id write-back: {:?}",
+                config_path
+            )
+        })?,
+        None => warn!(
+            "Could not write id for \"{}\" into {:?} - run `rblxsync import` to backfill ids",
+            name, config_path
+        ),
     }
-
-    std::fs::write(config_path, yaml).with_context(|| {
-        format!(
-            "Failed to write config after id write-back: {:?}",
-            config_path
-        )
-    })?;
     Ok(())
 }
 
@@ -995,7 +987,7 @@ async fn sync_game_passes(
     state: &mut SyncState,
     client: &RobloxClient,
     dry_run: bool,
-    created: &mut Vec<(&'static str, String, u64)>,
+    config_path: &Path,
 ) -> Result<()> {
     info!("Syncing Game Passes...");
 
@@ -1157,9 +1149,10 @@ async fn sync_game_passes(
                 if pass.icon.is_some() { ", icon" } else { "" }
             );
             created_count += 1;
-            // Record the create so the caller can write the new id back into
-            // the yml (only entries that had no id need backfilling).
-            created.push(("game_passes", pass.name.clone(), new_id));
+            // Persist the new id into the yml right now (entries with an
+            // explicit id never reach this branch), so a duplicate can never be
+            // created even if a later step fails before state is saved.
+            write_back_id(config_path, "game_passes", &pass.name, new_id)?;
             new_id
         };
 
@@ -1268,7 +1261,7 @@ async fn sync_developer_products(
     state: &mut SyncState,
     client: &RobloxClient,
     dry_run: bool,
-    created: &mut Vec<(&'static str, String, u64)>,
+    config_path: &Path,
 ) -> Result<()> {
     info!("Syncing Developer Products...");
 
@@ -1413,7 +1406,7 @@ async fn sync_developer_products(
                 prod.name, new_id,
                 if prod.icon.is_some() { ", icon" } else { "" });
             created_count += 1;
-            created.push(("developer_products", prod.name.clone(), new_id));
+            write_back_id(config_path, "developer_products", &prod.name, new_id)?;
             new_id
         };
 
@@ -1516,7 +1509,7 @@ async fn sync_badges(
     state: &mut SyncState,
     client: &RobloxClient,
     dry_run: bool,
-    created: &mut Vec<(&'static str, String, u64)>,
+    config_path: &Path,
 ) -> Result<()> {
     info!("Syncing Badges...");
 
@@ -1723,7 +1716,7 @@ async fn sync_badges(
             // every-other badge and requiring multiple sync reruns to
             // get through a wave.
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            created.push(("badges", badge.name.clone(), new_id));
+            write_back_id(config_path, "badges", &badge.name, new_id)?;
             new_id
         };
 
@@ -2042,14 +2035,13 @@ mod tests {
         config.game_passes = vec![game_pass("VIP Pass", Some(100))];
         let mut state = SyncState::default();
 
-        let mut created = Vec::new();
         sync_game_passes(
             1,
             &config,
             &mut state,
             &client(&server),
             false,
-            &mut created,
+            Path::new("/nonexistent/rblxsync.yml"),
         )
         .await
         .unwrap();
@@ -2077,14 +2069,13 @@ mod tests {
         // Seed state to exactly match config.
         state.update_game_pass(7, "VIP Pass".to_string(), None, Some(100), None, None, None);
 
-        let mut created = Vec::new();
         sync_game_passes(
             1,
             &config,
             &mut state,
             &client(&server),
             false,
-            &mut created,
+            Path::new("/nonexistent/rblxsync.yml"),
         )
         .await
         .unwrap();
@@ -2194,10 +2185,16 @@ mod tests {
         }];
         let mut state = SyncState::default();
 
-        let mut created = Vec::new();
-        sync_badges(1, &config, &mut state, &client(&server), true, &mut created)
-            .await
-            .unwrap();
+        sync_badges(
+            1,
+            &config,
+            &mut state,
+            &client(&server),
+            true,
+            Path::new("/nonexistent/rblxsync.yml"),
+        )
+        .await
+        .unwrap();
 
         // Dry run must not persist state.
         assert!(state.badges.is_empty());
@@ -2233,14 +2230,13 @@ mod tests {
         }];
         let mut state = SyncState::default();
 
-        let mut created = Vec::new();
         let err = sync_badges(
             1,
             &config,
             &mut state,
             &client(&server),
             false,
-            &mut created,
+            Path::new("/nonexistent/rblxsync.yml"),
         )
         .await
         .unwrap_err();
@@ -2711,20 +2707,18 @@ mod tests {
             None,
         );
 
-        let mut created = Vec::new();
         sync_game_passes(
             1,
             &config,
             &mut state,
             &client(&server),
             false,
-            &mut created,
+            Path::new("/nonexistent/rblxsync.yml"),
         )
         .await
         .unwrap();
 
         drop(patch);
-        assert!(created.is_empty());
         assert_eq!(state.game_passes.get(&77).unwrap().name, "New Name");
     }
 
@@ -2750,20 +2744,18 @@ mod tests {
         config.game_passes = vec![gp];
         let mut state = SyncState::default();
 
-        let mut created = Vec::new();
         sync_game_passes(
             1,
             &config,
             &mut state,
             &client(&server),
             false,
-            &mut created,
+            Path::new("/nonexistent/rblxsync.yml"),
         )
         .await
         .unwrap();
 
         drop(patch);
-        assert!(created.is_empty());
         assert!(state.game_passes.contains_key(&88));
     }
 
@@ -2791,20 +2783,11 @@ mod tests {
         config.game_passes = vec![game_pass("VIP Pass", Some(100))];
         let mut state = SyncState::default();
 
-        let mut created = Vec::new();
-        sync_game_passes(
-            1,
-            &config,
-            &mut state,
-            &client(&server),
-            false,
-            &mut created,
-        )
-        .await
-        .unwrap();
-        assert_eq!(created, vec![("game_passes", "VIP Pass".to_string(), 5005)]);
-
-        write_back_ids(&cfg, &created).unwrap();
+        // Passing the real config path makes the create write the id back
+        // in-place, immediately.
+        sync_game_passes(1, &config, &mut state, &client(&server), false, &cfg)
+            .await
+            .unwrap();
         let written = std::fs::read_to_string(&cfg).unwrap();
         assert!(written.contains("# the premium pass"), "got: {}", written);
         assert!(written.contains("id: 5005"), "got: {}", written);

@@ -52,9 +52,11 @@ only when their local SHA-256 differs from the lock file.
 - On success writes `rblxsync-lock.yml`, and regenerates `Config.luau` if
   `output_path` is set.
 - When it **creates** a resource whose entry had no `id`, it writes the new `id`
-  back into that `rblxsync.yml` entry (a surgical edit that preserves comments)
-  so future renames are safe. If it can't locate the entry, it warns to run
-  `import` to backfill ids.
+  back into that `rblxsync.yml` entry **immediately** (a surgical, comment-
+  preserving edit) — not batched at the end. So even if a later step fails or the
+  lock file is never written, the id is already recorded and the next run adopts
+  by id instead of creating a duplicate. If it can't locate the entry, it warns
+  to run `import` to backfill ids.
 
 > **Path note:** the lock file is *loaded* from the config file's parent dir but
 > *saved* to the current working directory. Run rblxsync from the directory that
