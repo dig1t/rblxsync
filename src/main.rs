@@ -49,6 +49,10 @@ enum Commands {
         /// auto-discover the root place; pass --place-id for each extra place.
         #[arg(long = "place-id")]
         place_id: Vec<u64>,
+        /// Badge IDs to import (repeatable). Roblox's API cannot list DISABLED
+        /// badges, so pass --badge-id to pull each disabled badge in by id.
+        #[arg(long = "badge-id")]
+        badge_id: Vec<u64>,
     },
 }
 
@@ -153,8 +157,16 @@ async fn main() -> anyhow::Result<()> {
         Commands::Import {
             universe_id,
             place_id,
+            badge_id,
         } => {
-            commands::import(client, Path::new(&args.config), universe_id, place_id).await?;
+            commands::import(
+                client,
+                Path::new(&args.config),
+                universe_id,
+                place_id,
+                badge_id,
+            )
+            .await?;
         }
         Commands::Validate => unreachable!(), // Handled above
     }
