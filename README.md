@@ -18,7 +18,7 @@ Documentation: https://dig1t.github.io/rbxsync/
 
 ## Installation
 
-> **Note:** The tool-manager and release-binary installs below assume published release artifacts. At the time of writing the repository publishes the GitHub Action (which builds from source) and the `v0.1.0` source tag; there is no binary-release pipeline yet. Until pre-built binaries are published, prefer **From Source**.
+> **Note:** The tool-manager and release-binary installs below assume published release artifacts. At the time of writing the repository publishes the GitHub Action (which builds from source) and the `v0.2.2` source tag; there is no binary-release pipeline yet. Until pre-built binaries are published, prefer **From Source**.
 
 ### From Source
 
@@ -28,16 +28,16 @@ cargo install --path .
 
 ### Rokit / Aftman / Foreman
 
-Once binary releases are published, you can install via a tool manager. Pin to a published tag (currently `0.1.0`):
+Once binary releases are published, you can install via a tool manager. Pin to a published tag (currently `0.2.2`):
 
 ```toml
 # rokit.toml or aftman.toml
 [tools]
-rblxsync = "dig1t/rblxsync@0.1.0"
+rblxsync = "dig1t/rblxsync@0.2.2"
 ```
 
 ```bash
-rokit add dig1t/rblxsync@0.1.0   # Rokit
+rokit add dig1t/rblxsync@0.2.2   # Rokit
 aftman install                   # Aftman
 foreman install                  # Foreman
 ```
@@ -143,13 +143,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync Roblox metadata
-        uses: dig1t/rblxsync@v0.1.0
+        uses: dig1t/rblxsync@v0.2.2
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run
 ```
 
-> Pin the action to a published ref. A `v0.1.0` tag exists; a `@v1` moving major tag is **not** published, so do not reference `@v1` until one is created.
+> Pin the action to a published ref. A `v0.2.2` tag exists; a `@v1` moving major tag is **not** published, so do not reference `@v1` until one is created.
 
 ### Action Inputs
 
@@ -165,14 +165,14 @@ jobs:
 
 ```yaml
 - name: Preview changes
-  uses: dig1t/rblxsync@v0.1.0
+  uses: dig1t/rblxsync@v0.2.2
   with:
     api_key: ${{ secrets.ROBLOX_API_KEY }}
     command: run
     args: --dry-run
 
 - name: Sync with universe settings (requires cookie)
-  uses: dig1t/rblxsync@v0.1.0
+  uses: dig1t/rblxsync@v0.2.2
   with:
     api_key: ${{ secrets.ROBLOX_API_KEY }}
     roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
