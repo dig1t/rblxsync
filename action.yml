@@ -32,6 +32,10 @@ runs:
       uses: actions/checkout@v7
       with:
         repository: dig1t/rblxsync
+        # Build the same ref the caller pinned in `uses: dig1t/rblxsync@<ref>`.
+        # Without this, every run builds the default branch and the pin only
+        # applies to this file. Empty (local `uses: ./`) falls back to default.
+        ref: ${{ github.action_ref }}
         path: .rblxsync-action
 
     - name: Set up Rust

@@ -50,8 +50,10 @@ cargo install --path .
 ### Check it worked
 
 ```bash
-rblxsync --help
+rblxsync --version
 ```
+
+That prints the version it installed. `rblxsync --help` lists every command.
 
 ## Get an API key
 

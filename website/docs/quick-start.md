@@ -223,11 +223,11 @@ Every field it can contain is listed in the [API reference](/api#the-generated-l
 
 ## The commands
 
-Heads up: `--config` goes **before** the command, not after.
+Working on more than one game? Point `--config` at a different file. It works on either side of the command.
 
 ```bash
-rblxsync --config production.yml run   # works
-rblxsync run --config production.yml   # error
+rblxsync run --config production.yml
+rblxsync --config production.yml run
 ```
 
 | Command | What it does |

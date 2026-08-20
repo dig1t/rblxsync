@@ -33,13 +33,6 @@ They get saved to the lock file and your `Config.luau`, and that's it. Change th
 
 rblxsync reads it and ignores it. Game pass `is_for_sale` does work.
 
-## `--config` goes before the command
-
-```bash
-rblxsync --config production.yml run   # works
-rblxsync run --config production.yml   # error
-```
-
 ## Run rblxsync from the folder that holds `rblxsync-lock.yml`
 
 The lock file is read from wherever your config lives but written to whatever folder you're standing in. Those being different will confuse it.

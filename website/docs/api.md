@@ -24,7 +24,7 @@ rblxsync [--config <PATH>] [COMMAND]
 | --- | --- | --- | --- |
 | `--config <PATH>` | `-c` | `rblxsync.yml` | Which config file to read. |
 
-This flag belongs to the top-level command, so it goes **before** the subcommand. `rblxsync run --config x.yml` is rejected; `rblxsync --config x.yml run` works.
+It's a global flag, so it works on either side of the subcommand. `rblxsync run --config x.yml` and `rblxsync --config x.yml run` do the same thing.
 
 Type `rblxsync` with no subcommand and you get `run` without `--dry-run`.
 

@@ -8,13 +8,14 @@ use std::path::Path;
 
 #[derive(Parser)]
 #[command(name = "rblxsync")]
+#[command(version)]
 #[command(about = "Manage Roblox experience metadata via Open Cloud", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
     /// Path to config file
-    #[arg(short, long, default_value = "rblxsync.yml")]
+    #[arg(short, long, global = true, default_value = "rblxsync.yml")]
     config: String,
 }
 
