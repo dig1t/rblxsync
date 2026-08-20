@@ -53,13 +53,6 @@ happens.
 Your config sits in git next to your code, so a price change is a line in a pull
 request someone can review, not a form somebody filled in at 2am.
 
-## Two words you need
-
-- **Universe** is your whole experience. It has one ID that never changes.
-- **Place** is one level inside it. A universe can have many places.
-
-Almost everything here happens at the universe level.
-
 ## Start here (about 5 minutes)
 
 ### 1. Install it
@@ -114,6 +107,9 @@ ROBLOX_API_KEY=paste_your_key_here
 Then add `.env` to your `.gitignore`. **Never** put this key on GitHub. Anyone who has it can change your game.
 
 ### 4. Find your universe ID
+
+The universe is your whole experience, and its ID is what rblxsync syncs against.
+It is not a place ID: places are the individual levels inside a universe.
 
 Open your experience on the Creator Hub. The number in the address bar is your universe ID:
 

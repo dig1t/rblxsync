@@ -33,13 +33,6 @@ rblxsync checks Roblox for a game pass called "VIP Pass". If it isn't there, it 
 
 Run it again tomorrow and nothing breaks. It never makes a second copy of the same pass.
 
-## Two words you need
-
-- **Universe** is your whole experience. It has one ID that never changes.
-- **Place** is one level inside it. A universe can have many places.
-
-Almost everything here happens at the universe level.
-
 ## What it can do
 
 - Create and update game passes, developer products, and badges from one file
