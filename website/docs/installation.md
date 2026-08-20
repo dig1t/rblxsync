@@ -14,14 +14,14 @@ Pick whichever of these three suits you.
 If your project already uses Rokit, Aftman, or Foreman, it's one line:
 
 ```bash
-rokit add dig1t/rblxsync@0.2.2
+rokit add dig1t/rblxsync@0.2.3
 ```
 
 Or add it to `rokit.toml`, `aftman.toml`, or `foreman.toml` yourself and run the install:
 
 ```toml
 [tools]
-rblxsync = "dig1t/rblxsync@0.2.2"
+rblxsync = "dig1t/rblxsync@0.2.3"
 ```
 
 This pins the version, so everyone on your team runs the same rblxsync.

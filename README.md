@@ -43,14 +43,14 @@ Almost everything here happens at the universe level.
 If your project already uses a tool manager, this is one line:
 
 ```bash
-rokit add dig1t/rblxsync@0.2.2
+rokit add dig1t/rblxsync@0.2.3
 ```
 
 Aftman and Foreman work too. Add it to `rokit.toml`, `aftman.toml`, or `foreman.toml` and run the install:
 
 ```toml
 [tools]
-rblxsync = "dig1t/rblxsync@0.2.2"
+rblxsync = "dig1t/rblxsync@0.2.3"
 ```
 
 No tool manager? Grab the zip for your machine from the [Releases](https://github.com/dig1t/rblxsync/releases) page and put the binary somewhere on your PATH. There's a build for Windows, Linux, Apple Silicon Macs, and Intel Macs.
@@ -384,7 +384,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync Roblox metadata
-        uses: dig1t/rblxsync@v0.2.2
+        uses: dig1t/rblxsync@v0.2.3
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run
@@ -392,7 +392,7 @@ jobs:
 
 Put your key in the repo under **Settings → Secrets and variables → Actions**, named `ROBLOX_API_KEY`. Add `ROBLOX_COOKIE` too if you're changing universe settings.
 
-Pin the version like `@v0.2.2`. There's no `@v1` tag yet, so don't use one.
+Pin the version like `@v0.2.3`. There's no `@v1` tag yet, so don't use one.
 
 | Input | Required | Default | What it is |
 |-------|----------|---------|------------|

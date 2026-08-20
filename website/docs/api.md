@@ -308,7 +308,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync universe settings and assets
-        uses: dig1t/rblxsync@v0.2.2
+        uses: dig1t/rblxsync@v0.2.3
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
