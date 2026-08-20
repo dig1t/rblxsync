@@ -24,11 +24,11 @@ const config = {
   url: 'https://dig1t.github.io',
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
-  baseUrl: '/rbxsync/',
+  baseUrl: '/rblxsync/',
 
   // GitHub pages deployment config.
   organizationName: 'dig1t', // Usually your GitHub org/user name.
-  projectName: 'rbxsync', // Usually your repo name.
+  projectName: 'rblxsync', // Usually your repo name.
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
@@ -54,7 +54,7 @@ const config = {
         docs: {
           routeBasePath: '/',
           sidebarPath: './sidebars.js',
-          editUrl: 'https://github.com/dig1t/rbxsync/tree/main/website/',
+          editUrl: 'https://github.com/dig1t/rblxsync/tree/main/website/',
         },
         blog: false,
         theme: {
@@ -86,7 +86,7 @@ const config = {
             label: 'Docs',
           },
           {
-            href: 'https://github.com/dig1t/rbxsync',
+            href: 'https://github.com/dig1t/rblxsync',
             label: 'GitHub',
             position: 'right',
           },
@@ -109,7 +109,7 @@ const config = {
             items: [
               {
                 label: 'GitHub',
-                href: 'https://github.com/dig1t/rbxsync',
+                href: 'https://github.com/dig1t/rblxsync',
               },
             ],
           },

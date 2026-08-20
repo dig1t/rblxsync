@@ -2,7 +2,7 @@
 
 `rblxsync` is a Rust-based CLI tool and GitHub Action for declaratively managing Roblox experience metadata via the Open Cloud API. Define your Universe settings, Game Passes, Developer Products, Badges, and Places in a single YAML file (`rblxsync.yml`) and sync them to Roblox with one command.
 
-Documentation: https://dig1t.github.io/rbxsync/
+Documentation: https://dig1t.github.io/rblxsync/
 
 > Full reference documentation lives in [docs/API.md](docs/API.md): CLI commands, the configuration schema, GitHub Action inputs, environment variables, the lock file, generated Luau output, and Open Cloud permissions.
 
