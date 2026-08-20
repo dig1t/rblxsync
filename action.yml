@@ -1,27 +1,27 @@
 name: 'rblxsync'
-description: 'Declaratively manage Roblox experience metadata via Open Cloud API'
+description: 'Sync your game passes, developer products, badges, and places from one YAML file'
 branding:
   icon: 'upload-cloud'
   color: 'blue'
 
 inputs:
   api_key:
-    description: 'Roblox Open Cloud API Key'
+    description: 'Your Roblox Open Cloud API key. Store it as a repository secret.'
     required: true
   command:
-    description: 'Command to run: run, publish, validate, or export'
+    description: 'Which command to run: run, publish, validate, or export'
     required: false
     default: 'run'
   config:
-    description: 'Path to rblxsync.yml config file'
+    description: 'Path to your config file'
     required: false
     default: 'rblxsync.yml'
   args:
-    description: 'Additional arguments (e.g., --dry-run for run command)'
+    description: 'Extra flags, such as --dry-run. Split on spaces, so no quoting.'
     required: false
     default: ''
   roblox_cookie:
-    description: 'Roblox .ROBLOSECURITY cookie (required for universe settings)'
+    description: 'Your .ROBLOSECURITY cookie. Only needed when changing universe settings.'
     required: false
     default: ''
 

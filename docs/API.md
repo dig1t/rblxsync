@@ -1,26 +1,26 @@
-# rblxsync API Reference
+# rblxsync reference
 
-`rblxsync` is a Rust CLI tool and GitHub Action for declaratively managing Roblox experience metadata via the Open Cloud API. It synchronizes Universe settings, Game Passes, Developer Products, Badges, and Places from a local YAML configuration file (`rblxsync.yml`).
+Every command, flag, config field, and file format in one place. If you just want to sync your first game pass, start with the [README](../README.md) instead.
 
-This document is the authoritative reference for the CLI surface, the `rblxsync.yml` schema, the GitHub Action, environment variables, the generated lock file, the generated Luau output, and the Open Cloud permissions required. For installation and a getting-started walkthrough, see the [README](../README.md).
+`rblxsync` reads a YAML file and makes your Roblox experience match it: universe settings, game passes, developer products, badges, and places.
 
 ---
 
-## CLI Commands
-
-The binary is named `rblxsync`. Top-level usage:
+## CLI commands
 
 ```
 rblxsync [--config <PATH>] [COMMAND]
 ```
 
-### Global flags
+### Global flag
 
-| Flag | Alias | Default | Description |
+| Flag | Alias | Default | What it does |
 | --- | --- | --- | --- |
-| `--config <PATH>` | `-c` | `rblxsync.yml` | Path to the YAML config file. Applies to every subcommand. |
+| `--config <PATH>` | `-c` | `rblxsync.yml` | Which config file to read. |
 
-If no subcommand is given, `rblxsync` defaults to `run` (with `dry_run = false`).
+This flag belongs to the top-level command, so it goes **before** the subcommand. `rblxsync run --config x.yml` is rejected; `rblxsync --config x.yml run` works.
+
+Type `rblxsync` with no subcommand and you get `run` without `--dry-run`.
 
 ### `run`
 
@@ -28,19 +28,29 @@ If no subcommand is given, `rblxsync` defaults to `run` (with `dry_run = false`)
 rblxsync run [--dry-run]
 ```
 
-Syncs universe settings and assets (game passes, developer products, badges) against the Open Cloud API. Idempotent: resources are matched by name (case-insensitive), created if missing, and updated (PATCH) if they exist. Icons are only re-uploaded when their local SHA-256 hash differs from the hash stored in the lock file.
+Makes Roblox match your config. Safe to run as many times as you like.
 
-| Flag | Description |
+| Flag | What it does |
 | --- | --- |
-| `--dry-run` | Previews changes without applying them. Makes no mutating HTTP calls, does not save state, and does not write `Config.luau`. |
+| `--dry-run` | Prints the plan and stops. No writes, no state saved, no `Config.luau` written. |
 
-Behavior notes:
+**How each resource is matched**
 
-- If `universe.has_settings()` is true (any of `name`, `description`, `genre`, `playable_devices`, `max_players`, or `private_server_cost` is set), `run` **requires** the `ROBLOX_COOKIE` environment variable. If it is absent, the command prints `.ROBLOSECURITY` cookie-setup instructions and exits with status `1`.
-- On success, `run` writes `rblxsync-lock.yml`.
-- If `output_path` is set in the config, `run` regenerates the Luau config at that path after a successful sync.
+1. The entry has an `id:` → that ID wins. The name is only a label, so renaming is safe and no duplicate is ever created.
+2. No `id:` → matched by name, ignoring capitals.
+3. No match at all → created, and the new `id:` is written straight back into your `rblxsync.yml`.
 
-> **Path note:** The lock file is **loaded** from the config file's parent directory but **saved** to the current working directory. These differ when the config is not in the cwd. Run `rblxsync` from the directory containing `rblxsync-lock.yml` to keep state consistent.
+That write-back is a surgical line insert. Your comments and formatting survive it, and it happens the instant the resource is created rather than at the end of the run. If a later step fails, the ID is already saved and the next run adopts it instead of making a second copy.
+
+**Icons** are only re-uploaded when the SHA-256 of the local file differs from the hash in the lock file.
+
+**Other behavior**
+
+- If any universe setting is present (`name`, `description`, `genre`, `playable_devices`, `max_players`, or `private_server_cost`), `run` requires `ROBLOX_COOKIE`. Without it, the command prints cookie setup instructions and exits `1`.
+- A successful run writes `rblxsync-lock.yml`.
+- If `output_path` is set, the Luau module is regenerated after the sync.
+
+**Path warning:** the lock file is *loaded* from the config file's folder but *saved* to whatever folder you ran the command from. Those being different will desync your state. Run rblxsync from the folder holding `rblxsync-lock.yml`.
 
 ### `publish`
 
@@ -48,10 +58,32 @@ Behavior notes:
 rblxsync publish
 ```
 
-Publishes every place in the config where `publish: true`. For each such place, calls `publish_place` with the place's `file_path`. This command does **not** require `ROBLOX_COOKIE`.
+Uploads and publishes every place in the config with `publish: true`. Does not need `ROBLOX_COOKIE`.
 
-- Places with a missing `file_path` are skipped (an error is logged) and processing continues.
-- Per-place errors are logged but are **not** fatal; remaining places are still attempted.
+- A place with a missing `file_path` is logged as an error and skipped.
+- One place failing does not stop the others.
+
+Places are always published live. There's no "save without publishing" option.
+
+### `import`
+
+```
+rblxsync import [--universe-id <id>] [--place-id <id>]... [--badge-id <id>]...
+```
+
+Pulls an existing experience down into `rblxsync.yml` and `rblxsync-lock.yml`. Use it to adopt rblxsync on a game that already has passes, products, and badges, or to absorb a resource rblxsync doesn't know about yet.
+
+| Flag | Repeatable | What it does |
+| --- | --- | --- |
+| `--universe-id <id>` | No | Which universe to import. Falls back to `universe.id` in an existing config. |
+| `--place-id <id>` | Yes | An extra place to import. The API key only auto-discovers the root place, so pass one flag per additional place. |
+| `--badge-id <id>` | Yes | A badge to import by ID. Roblox's badge list leaves out **disabled** badges, so this is the only way to pull those in. |
+
+**Remote wins.** Where a value exists both locally and on Roblox, the Roblox value overwrites yours. Entries that only exist locally are kept. Lock file entries for resources that no longer exist are dropped.
+
+Before writing, your existing `rblxsync.yml` is renamed to `rblxsync.old.yml`, then `rblxsync.old1.yml`, `.old2.yml` and so on if that name is taken. Nothing is overwritten without a backup.
+
+Icons are not imported.
 
 ### `validate`
 
@@ -59,13 +91,13 @@ Publishes every place in the config where `publish: true`. For each such place, 
 rblxsync validate
 ```
 
-Validates the YAML config **without** requiring `ROBLOX_API_KEY` (this check runs before environment loading). It:
+Checks the config without contacting Roblox. It does **not** need `ROBLOX_API_KEY`.
 
-1. Confirms the config file exists.
-2. Parses it into `RblxSyncConfig`.
-3. Rejects case-insensitive duplicate names among game passes, developer products, and badges.
+1. The config file exists.
+2. It parses as valid YAML in the expected shape.
+3. No two game passes, developer products, or badges share a name (ignoring capitals).
 
-Exits `1` on any failure; logs `Config file is valid.` on success.
+Exits `1` on failure, logs `Config file is valid.` on success.
 
 ### `export`
 
@@ -73,16 +105,14 @@ Exits `1` on any failure; logs `Config file is valid.` on success.
 rblxsync export [--output <PATH>] [--lua]
 ```
 
-Pulls live game passes, developer products, and badges from the Open Cloud API and writes them to a Luau/Lua table file.
+Fetches your live game passes, developer products, and badges and dumps them into a flat Lua table.
 
-| Flag | Alias | Description |
+| Flag | Alias | What it does |
 | --- | --- | --- |
-| `--output <PATH>` | `-o` | Overrides the output file path. |
-| `--lua` | | Changes only the **default** filename to `config.lua` instead of `config.luau`. The generated content is identical and valid for both. |
+| `--output <PATH>` | `-o` | Where to write the file. |
+| `--lua` | | Changes the **default filename** to `config.lua` instead of `config.luau`. The file contents are identical either way. |
 
-Default output filename: `config.luau` (or `config.lua` with `--lua`).
-
-Exported table shape (note: this is **flatter** than the richer `Config.luau` produced by `run`):
+What you get:
 
 ```lua
 return {
@@ -98,97 +128,104 @@ return {
 }
 ```
 
+This is a one-way snapshot for reading. It is not the typed module `output_path` generates, and it is not a config you can feed back into `run`. For that, use [`import`](#import).
+
 ---
 
-## Configuration Schema
+## Config file
 
-The config file (`rblxsync.yml` by default) is parsed into `RblxSyncConfig` via `serde_yaml`.
+The config is `rblxsync.yml` unless `--config` says otherwise.
 
-### Root (`RblxSyncConfig`)
+### Top level
 
-| Field | Type | Required | Default | Description |
+| Field | Type | Required | Default | What it is |
 | --- | --- | --- | --- | --- |
-| `assets_dir` | string | No | `assets` | Directory containing icon files referenced by resources. |
-| `creator` | object (`CreatorConfig`) | No | – | Asset creation context. Required only when uploading icons. |
-| `universe` | object (`UniverseConfig`) | **Yes** | – | Target universe and its settings. |
-| `game_passes` | list (`GamePassConfig`) | No | `[]` | Game passes to sync. |
-| `developer_products` | list (`DeveloperProductConfig`) | No | `[]` | Developer products to sync. |
-| `badges` | list (`BadgeConfig`) | No | `[]` | Badges to sync. |
-| `places` | list (`PlaceConfig`) | No | `[]` | Places available to the `publish` command. |
-| `badge_payment_source` | string | No | – | Payment source for badge creation (costs 100 Robux per badge). `"user"` or `"group"`. |
-| `output_path` | string | No | – | Path where `run` regenerates the Luau config (e.g. `src/shared/Config.luau`). |
+| `universe` | object | **Yes** | | Which universe, plus its settings. |
+| `assets_dir` | string | No | `assets` | Folder holding the icon files your resources reference. |
+| `creator` | object | No | | Who owns uploaded icons. Only needed when uploading icons. |
+| `game_passes` | list | No | `[]` | Game passes to sync. |
+| `developer_products` | list | No | `[]` | Developer products to sync. |
+| `badges` | list | No | `[]` | Badges to sync. |
+| `places` | list | No | `[]` | Places available to `publish`. |
+| `badge_payment_source` | string | No | | `"user"` or `"group"`. Who pays the 100 Robux per new badge. |
+| `output_path` | string | No | | Where `run` writes the typed Luau module, e.g. `src/shared/Config.luau`. |
 
-### `creator` (`CreatorConfig`)
+### `creator`
 
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `id` | string | **Yes** | – | User or group id (as a string). |
-| `type` | string | **Yes** | – | `"user"` or `"group"`. Any value other than `"group"` is treated as a user. |
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `id` | string | **Yes** | User or group ID, written as a string. |
+| `type` | string | **Yes** | `"user"` or `"group"`. Anything other than `"group"` counts as a user. |
 
-### `universe` (`UniverseConfig`)
+### `universe`
 
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `id` | number (u64) | **Yes** | – | Universe ID. |
-| `name` | string | No | – | Experience name. |
-| `description` | string | No | – | Experience description. |
-| `genre` | string | No | – | Genre. Tracked in state but **never sent to any API** (not API-updatable). |
-| `playable_devices` | list of string | No | – | Allowed devices: `computer`, `phone`, `tablet`, `console`, `vr` (mapped to ids 1–5). Unknown values are filtered out. |
-| `max_players` | number (u32) | No | – | Tracked in state but **never sent to the universe configuration API** (max players is a per-place setting). |
-| `private_server_cost` | `PrivateServerCost` | No | – | See below. |
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `id` | number | **Yes** | Universe ID. |
+| `name` | string | No | Experience name. |
+| `description` | string | No | Experience description. |
+| `genre` | string | No | Saved locally only. Never sent to Roblox, never checked against a list of valid genres. |
+| `playable_devices` | list of string | No | Any of `computer`, `phone`, `tablet`, `console`, `vr`. Unrecognized values are dropped silently. |
+| `max_players` | number | No | Saved locally only. Never sent to Roblox, because max players is a per-place setting. |
+| `private_server_cost` | see below | No | Private server pricing. |
 
-Setting any of these fields triggers the `ROBLOX_COOKIE` requirement for `run`.
+Setting any field here other than `id` makes `run` demand `ROBLOX_COOKIE`, including the two local-only fields.
 
 #### `private_server_cost` values
 
-| YAML value | Meaning | API effect |
+| You write | Meaning | What Roblox gets |
 | --- | --- | --- |
-| `"disabled"` (case-insensitive) | Private servers off | `allowPrivateServers = false` |
+| `"disabled"` (any capitalization) | Private servers off | `allowPrivateServers = false` |
 | `"free"`, `0`, or `"0"` | Free private servers | `allowPrivateServers = true`, `privateServerPrice = 0` |
-| positive integer (or quoted, e.g. `100` / `"100"`) | Paid private servers | `allowPrivateServers = true`, `privateServerPrice = n` |
+| `100` or `"100"` | Costs 100 Robux | `allowPrivateServers = true`, `privateServerPrice = 100` |
 
-Negative values and values greater than `u32::MAX` are rejected at parse time.
+Negative numbers and anything above `u32::MAX` are rejected when the file is parsed.
 
-### `game_passes[]` (`GamePassConfig`)
+### `game_passes[]`
 
-| Field | Type | Required | Default | Description |
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `id` | number | No | Roblox game pass ID. Set it and matching uses it instead of the name. Usually written for you on create. |
+| `name` | string | **Yes** | Unique, ignoring capitals. Used as the match key when there's no `id`. |
+| `description` | string | No | Shown on the pass. |
+| `price` | number | No | Robux. Defaults to `0` when created. |
+| `icon` | string | No | Filename inside `assets_dir`. |
+| `is_for_sale` | boolean | No | Whether it's buyable. This one is synced. |
+
+### `developer_products[]`
+
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `id` | number | No | Roblox product ID. Same matching rule as game passes. |
+| `name` | string | **Yes** | Unique, ignoring capitals. |
+| `description` | string | No | Shown on the product. |
+| `price` | number | **Yes** | Robux. Required here, unlike game passes. |
+| `icon` | string | No | Filename inside `assets_dir`. |
+| `is_active` | boolean | No | Read and then ignored. Currently does nothing. |
+
+### `badges[]`
+
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `id` | number | No | Roblox badge ID. Same matching rule as game passes. |
+| `name` | string | **Yes** | Unique, ignoring capitals. |
+| `description` | string | No | Shown on the badge. |
+| `icon` | string | No | Filename inside `assets_dir`. |
+| `is_enabled` | boolean | No | Sent as `enabled` when patching. |
+
+Creating a badge costs 100 Robux and needs `badge_payment_source`. If it's missing, rblxsync turns the API error into a readable message.
+
+Roblox cannot list disabled badges. If a disabled badge already exists and your config only names it, rblxsync will not see it and will create a duplicate. Give the entry an `id:` (or run `rblxsync import --badge-id <id>`) to adopt it instead.
+
+### `places[]`
+
+| Field | Type | Required | Default | What it is |
 | --- | --- | --- | --- | --- |
-| `name` | string | **Yes** | – | Unique (case-insensitive). Used as the match key. |
-| `description` | string | No | – | Game pass description. |
-| `price` | number (u32) | No | `0` on create | Price in Robux. |
-| `icon` | string | No | – | Icon filename relative to `assets_dir`. |
-| `is_for_sale` | boolean | No | – | Whether the pass is for sale. |
+| `place_id` | number | **Yes** | | Which place to publish to. |
+| `file_path` | string | **Yes** | | Path to a `.rbxl` or `.rbxlx` file. |
+| `publish` | boolean | No | `false` | Only `true` places are touched by `rblxsync publish`. |
 
-### `developer_products[]` (`DeveloperProductConfig`)
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `name` | string | **Yes** | – | Unique (case-insensitive). |
-| `description` | string | No | – | Product description. |
-| `price` | number (u32) | **Yes** | – | Price in Robux. Unlike game passes, this is required. |
-| `icon` | string | No | – | Icon filename relative to `assets_dir`. |
-| `is_active` | boolean | No | – | **Parsed but never synced.** Currently has no effect. |
-
-### `badges[]` (`BadgeConfig`)
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `name` | string | **Yes** | – | Unique (case-insensitive). |
-| `description` | string | No | – | Badge description. |
-| `icon` | string | No | – | Icon filename relative to `assets_dir`. |
-| `is_enabled` | boolean | No | – | Mapped to the API field `enabled` on PATCH. |
-
-Creating a badge costs 100 Robux and requires `badge_payment_source`. If it is missing, the API error triggers a helpful message.
-
-### `places[]` (`PlaceConfig`)
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `place_id` | number (u64) | **Yes** | – | Target place ID. |
-| `file_path` | string | **Yes** | – | Path to a `.rbxl` / `.rbxlx` file. |
-| `publish` | boolean | No | `false` | Only places with `publish: true` are published by `rblxsync publish`. |
-
-### Example `rblxsync.yml`
+### A full example
 
 ```yaml
 assets_dir: assets/icons
@@ -210,20 +247,20 @@ universe:
 
 game_passes:
   - name: "VIP Pass"
-    description: "Unlocks VIP perks"
+    description: "Fly, glow, and skip the queue"
     price: 100
     icon: "vip_pass.png"
     is_for_sale: true
 
 developer_products:
   - name: "Speed Boost"
-    description: "Temporary speed boost"
+    description: "Move faster for five minutes"
     price: 50
     icon: "speed_boost.png"
 
 badges:
   - name: "First Win"
-    description: "Awarded for your first victory"
+    description: "Won your first round"
     icon: "first_win.png"
     is_enabled: true
 
@@ -237,19 +274,19 @@ places:
 
 ## GitHub Action
 
-`rblxsync` ships as a composite GitHub Action. It checks out the tool into `.rblxsync-action`, sets up stable Rust, caches cargo, builds `--release`, and runs `rblxsync "$COMMAND" --config "$CONFIG" $ARGS`.
+A composite action. It checks rblxsync out into `.rblxsync-action`, installs stable Rust, caches cargo, builds `--release`, then runs `rblxsync "$COMMAND" --config "$CONFIG" $ARGS`.
 
 ### Inputs
 
-| Input | Required | Default | Description |
+| Input | Required | Default | What it is |
 | --- | --- | --- | --- |
-| `api_key` | **Yes** | – | Open Cloud API key. Exposed as `ROBLOX_API_KEY`. |
-| `command` | No | `run` | One of `run`, `publish`, `validate`, `export`. |
-| `config` | No | `rblxsync.yml` | Path to the config file. Passed as `--config`. |
-| `args` | No | `""` | Extra arguments appended **unquoted**, so multiple flags word-split (e.g. `--dry-run`). |
-| `roblox_cookie` | No | `""` | `.ROBLOSECURITY` cookie. Exposed as `ROBLOX_COOKIE`. Required only for universe settings. |
+| `api_key` | **Yes** | | Open Cloud API key. Becomes `ROBLOX_API_KEY`. |
+| `command` | No | `run` | `run`, `publish`, `validate`, or `export`. |
+| `config` | No | `rblxsync.yml` | Passed through as `--config`. |
+| `args` | No | `""` | Extra flags, appended **unquoted**, so they split on spaces. Flags only, nothing containing a space. |
+| `roblox_cookie` | No | `""` | `.ROBLOSECURITY` cookie. Becomes `ROBLOX_COOKIE`. Only needed for universe settings. |
 
-### Example workflow
+### Example
 
 ```yaml
 name: Sync Roblox metadata
@@ -265,7 +302,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync universe settings and assets
-        uses: dig1t/rblxsync@main
+        uses: dig1t/rblxsync@v0.2.2
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
@@ -274,44 +311,44 @@ jobs:
           args: "--dry-run"
 ```
 
+Anything `run` writes back into `rblxsync.yml` or `rblxsync-lock.yml` on the runner is thrown away when the job finishes. Create new resources locally and commit the IDs, then let CI do the updates.
+
 ---
 
-## Environment Variables
+## Environment variables
 
-| Variable | Required | Description |
+| Variable | Required | What it is |
 | --- | --- | --- |
-| `ROBLOX_API_KEY` | Yes (all commands except `validate`) | Open Cloud API key. Sent as the `x-api-key` header. `validate` does not need it. |
-| `ROBLOX_COOKIE` | Conditional | `.ROBLOSECURITY` cookie. Required **only** when universe settings are defined, for the `develop.roblox.com` configuration PATCH. |
-| `RUST_LOG` | No | Standard `env_logger` filter. Defaults to `info`. |
+| `ROBLOX_API_KEY` | Every command except `validate` | Open Cloud API key. Sent as the `x-api-key` header. |
+| `ROBLOX_COOKIE` | Only with universe settings | `.ROBLOSECURITY` cookie, for the `develop.roblox.com` configuration PATCH. |
+| `RUST_LOG` | No | `env_logger` filter. Defaults to `info`. Set it to `debug` when something looks wrong. |
 
-Both `ROBLOX_API_KEY` and `ROBLOX_COOKIE` are loaded from `.env` via `dotenvy`. `.env` is gitignored; never commit or print these values.
+Both secrets are read from `.env` through `dotenvy`. Keep `.env` in `.gitignore`. Never commit or print either value.
 
 ---
 
-## Lock File (`rblxsync-lock.yml`)
+## `rblxsync-lock.yml`
 
-`rblxsync-lock.yml` is generated local state. **Do not hand-edit it.** It tracks resource IDs and local icon hashes so updates stay idempotent (only changed icons are re-uploaded). A missing file is treated as empty default state.
+Generated state. **Don't hand-edit it**, your changes get overwritten. Commit it so every machine and your CI agree on what already exists. A missing file is treated as empty.
 
-Top-level keys:
-
-| Key | Type | Description |
+| Key | Type | What it holds |
 | --- | --- | --- |
-| `universe` | `UniverseState` (optional) | Omitted if no universe settings are tracked. |
-| `game_passes` | map of `u64` resource id → `ResourceState` | |
-| `developer_products` | map of `u64` resource id → `ResourceState` | |
-| `badges` | map of `u64` resource id → `ResourceState` | |
+| `universe` | object, optional | Left out when no universe settings are tracked. |
+| `game_passes` | map of ID to resource | |
+| `developer_products` | map of ID to resource | |
+| `badges` | map of ID to resource | |
 
-`UniverseState` fields: `name?`, `description?`, `genre?`, `playable_devices?` (`{string}`), `max_players?` (number), `private_server_cost?` (string: `disabled` | `0` | numeric string).
+The universe entry holds `name`, `description`, `genre`, `playable_devices`, `max_players`, and `private_server_cost` (as a string: `disabled`, `0`, or a number).
 
-`ResourceState` fields: `name` (string), `description?`, `price?` (u64), `is_for_sale?` (bool, game passes), `is_enabled?` (bool, badges), `icon_hash?` (SHA-256 hex of the local icon for change detection), `icon_asset_id?` (u64 uploaded image asset id; badges do not store this).
+Each resource entry holds `name`, and optionally `description`, `price`, `is_for_sale` (game passes), `is_enabled` (badges), `icon_hash` (SHA-256 of the local icon, used to skip unchanged uploads), and `icon_asset_id` (the uploaded image asset ID; badges don't store this).
 
 ---
 
-## Generated Luau Output (`Config.luau`)
+## The generated Luau module
 
-When `output_path` is set, `run` regenerates a strict-typed Luau module (`--!strict`) at that path after a successful sync. Output is deterministic (resources sorted by id). Game code can `require` this module to read resource IDs and metadata. Strings are escaped for backslash, `"`, `\n`, `\r`, and `\t`.
+Set `output_path` and every successful `run` rewrites a `--!strict` Luau module there. Resources are sorted by ID so the file is stable in git. Strings are escaped for `\`, `"`, `\n`, `\r`, and `\t`.
 
-### Shape
+The type definitions are always emitted in full. A section with nothing in it shows up as an empty table rather than disappearing, so your code can index it without checking.
 
 ```lua
 --!strict
@@ -319,103 +356,147 @@ When `output_path` is set, `run` regenerates a strict-typed Luau module (`--!str
 -- This file is regenerated each time `rblxsync run` completes.
 
 export type Universe = {
-    Id: number,
-    Name: string?,
-    Description: string?,
-    Genre: string?,
-    PlayableDevices: {string}?,
-    MaxPlayers: number?,
-    PrivateServerCost: (number | "disabled")?,
+	Id: number,
+	Name: string?,
+	Description: string?,
+	Genre: string?,
+	PlayableDevices: {string}?,
+	MaxPlayers: number?,
+	PrivateServerCost: (number | "disabled")?,
 }
 
 export type GamePass = {
-    Id: number,
-    Name: string,
-    Description: string?,
-    Price: number?,
-    IsForSale: boolean?,
+	Id: number,
+	Name: string,
+	Description: string?,
+	Price: number?,
+	IsForSale: boolean?,
 }
 
 export type DeveloperProduct = {
-    Id: number,
-    Name: string,
-    Description: string?,
-    Price: number?,
+	Id: number,
+	Name: string,
+	Description: string?,
+	Price: number?,
 }
 
 export type Badge = {
-    Id: number,
-    Name: string,
-    Description: string?,
-    IsEnabled: boolean?,
+	Id: number,
+	Name: string,
+	Description: string?,
+	IsEnabled: boolean?,
 }
 
 return {
-    Universe = {
-        Id = 123456789,
-        Name = "My Awesome Game",
-        Description = "Updated via rblxsync!",
-        Genre = "adventure",
-        PlayableDevices = { "computer", "phone" },
-        MaxPlayers = 50,
-        PrivateServerCost = "disabled",
-    } :: Universe,
+	Universe = {
+		Id = 123456789,
+		Name = "Zombie Diner Tycoon",
+		Description = "Cook burgers. Survive the night shift.",
+		Genre = "adventure",
+		PlayableDevices = { "computer", "phone", "tablet" },
+		MaxPlayers = 12,
+		PrivateServerCost = 100,
+	} :: Universe,
 
-    GamePasses = {
-        {
-            Id = 123456,
-            Name = "VIP Pass",
-            Description = "Unlocks VIP perks",
-            Price = 100,
-            IsForSale = true,
-        },
-    } :: { GamePass },
+	GamePasses = {
+		{
+			Id = 1122334455,
+			Name = "VIP Pass",
+			Description = "Skip the queue and get a golden name tag",
+			Price = 199,
+			IsForSale = true,
+		},
+		{
+			Id = 1122336677,
+			Name = "Double Tips",
+			Description = "Every customer tips twice as much",
+			Price = 149,
+			IsForSale = true,
+		},
+		{
+			Id = 1122338899,
+			Name = "Golden Spatula",
+			Description = "Cook burgers twice as fast",
+			Price = 299,
+			IsForSale = false,
+		},
+	} :: { GamePass },
 
-    DeveloperProducts = {
-        {
-            Id = 234567,
-            Name = "Speed Boost",
-            Price = 50,
-        },
-    } :: { DeveloperProduct },
+	DeveloperProducts = {
+		{
+			Id = 2233445566,
+			Name = "500 Coins",
+			Description = "Starter coin pack",
+			Price = 25,
+		},
+		{
+			Id = 2233447788,
+			Name = "3000 Coins",
+			Description = "Most popular coin pack",
+			Price = 100,
+		},
+		{
+			Id = 2233449900,
+			Name = "Instant Restock",
+			Description = "Refill the fridge without waiting",
+			Price = 20,
+		},
+	} :: { DeveloperProduct },
 
-    Badges = {
-        {
-            Id = 345678,
-            Name = "First Win",
-            IsEnabled = true,
-        },
-    } :: { Badge },
+	Badges = {
+		{
+			Id = 1234567890123456,
+			Name = "First Shift",
+			Description = "Survived your first night",
+			IsEnabled = true,
+		},
+		{
+			Id = 1234567890987654,
+			Name = "Night Owl",
+			Description = "Survive ten nights across all your runs",
+			IsEnabled = true,
+		},
+	} :: { Badge },
 }
 ```
 
-`PrivateServerCost` is emitted as a bare number for numeric costs and as the string `"disabled"` when disabled.
+That example came from a config with a paid private server, which is why `PrivateServerCost` is the number `100`. Turn private servers off and it becomes the string `"disabled"` instead.
 
-### Consuming it in-game
+Anything you never set is left out of the table rather than written as `nil`. Icons never appear here at all, they're tracked in the lock file.
+
+`DeveloperProduct` is exactly `{ Id, Name, Description, Price }`. There is no `IsActive` field, so don't write game code expecting one.
+
+### Using it in game
 
 ```lua
 local Config = require(game.ReplicatedStorage.Shared.Config)
 
-local gamePassId = Config.GamePasses[1].Id
+MarketplaceService:PromptGamePassPurchase(player, Config.GamePasses[1].Id)
 print(Config.Universe.Name)
 ```
 
-> This `Config.luau` shape (generated by `run`) is richer than the flat table produced by `export`. Do not confuse the two.
+Don't edit this file by hand. To change its shape, edit `src/output.rs`.
+
+It is not the same as what `export` produces. That one is flat, untyped, and uses snake_case keys.
 
 ---
 
-## Open Cloud Permissions
+## Permissions and endpoints
 
-Universe **settings** updates do **not** use the API key at all. They require the `.ROBLOSECURITY` cookie because `develop.roblox.com/v2/.../configuration` is not an Open Cloud key endpoint. The `creator` `id`/`type` in config drives the asset `creationContext` (user vs group).
+rblxsync does not run purely on Open Cloud.
 
-The Open Cloud API key (`ROBLOX_API_KEY`) needs the following scopes:
+**Universe settings don't use the API key at all.** `develop.roblox.com/v2/.../configuration` is not an Open Cloud endpoint, so those updates go through the `.ROBLOSECURITY` cookie. Some badge operations also use legacy endpoints instead of Open Cloud.
 
-| Feature | Scope | Endpoints / notes |
+Your `creator` `id` and `type` decide the `creationContext` on uploaded assets (user vs group).
+
+The API key needs these scopes:
+
+| Feature | Scope | Endpoints |
 | --- | --- | --- |
-| Game Passes | read + write | `GET`/`POST`/`PATCH .../game-passes/v1/universes/{uid}/game-passes` |
-| Developer Products | read + write | `GET`/`POST`/`PATCH .../developer-products/v2/universes/{uid}/developer-products` |
-| Badges | read + create/manage | List via `badges.roblox.com/v1/universes/{uid}/badges`; create/update/icon via the legacy `legacy-badges` / `legacy-publish` endpoints |
-| Assets (icons) | upload | `POST /assets/v1/assets` (multipart), polled at `GET /assets/v1/{operation}` |
-| Places | publish (versions write) | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
+| Game passes | read + write | `GET`/`POST`/`PATCH .../game-passes/v1/universes/{uid}/game-passes` |
+| Developer products | read + write | `GET`/`POST`/`PATCH .../developer-products/v2/universes/{uid}/developer-products` |
+| Badges | read + create/manage | List via `badges.roblox.com/v1/universes/{uid}/badges`; create, update, and icon through the legacy `legacy-badges` / `legacy-publish` endpoints |
+| Assets (icons) | upload | `POST /assets/v1/assets` (multipart), then polled at `GET /assets/v1/{operation}` |
+| Places | publish | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
 
-`429` responses are retried up to 3 times honoring `Retry-After`.
+A `429` (too many requests) is retried up to 3 times, waiting as long as the `Retry-After` header says.

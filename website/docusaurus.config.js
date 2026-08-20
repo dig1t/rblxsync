@@ -12,7 +12,7 @@ import {themes as prismThemes} from 'prism-react-renderer';
 const config = {
   title: 'rblxsync',
   tagline:
-    'Declaratively manage Roblox experience metadata via the Open Cloud API',
+    'Keep your game passes, products, and badges in one file. Sync with one command.',
   favicon: 'img/favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future

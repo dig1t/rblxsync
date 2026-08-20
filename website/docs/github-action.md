@@ -5,7 +5,7 @@ title: GitHub Action
 
 # GitHub Action
 
-The action checks out and builds `rblxsync` from source (`cargo build --release`), then runs the requested command.
+Push to `main`, and your game updates itself. No running anything by hand.
 
 ```yaml
 name: Sync Roblox Experience
@@ -21,42 +21,75 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync Roblox metadata
-        uses: dig1t/rblxsync@v0.1.0
+        uses: dig1t/rblxsync@v0.2.2
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run
 ```
 
-> Pin the action to a published ref. A `v0.1.0` tag exists; a `@v1` moving major tag is **not** published, so do not reference `@v1` until one is created.
+The action clones rblxsync, builds it, and runs the command you asked for. The first run takes a few minutes because of the build. After that the cargo cache makes it quick.
 
-## Action Inputs
+## Add your secrets
 
-| Input | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `api_key` | **Yes** | – | Roblox Open Cloud API key. |
-| `command` | No | `run` | One of `run`, `publish`, `validate`, `export`. |
-| `config` | No | `rblxsync.yml` | Path to the config file (passed as the global `--config`). |
-| `args` | No | `""` | Extra flags appended to the command, e.g. `--dry-run`. |
-| `roblox_cookie` | No | `""` | `.ROBLOSECURITY` cookie (see Environment Variables). |
+Your API key can't go in the workflow file, it goes in the repo's secret store.
 
-> **`args` is word-split, not shell-quoted.** The action passes `args` unquoted so multiple flags (e.g. `--dry-run --foo`) split into separate arguments. As a result, **any single argument containing spaces will be broken apart**; there is no quoting mechanism. Use only flag-style arguments without embedded spaces.
+Open your repo, then **Settings → Secrets and variables → Actions → New repository secret**. Add:
+
+- `ROBLOX_API_KEY`
+- `ROBLOX_COOKIE`, but only if you're changing universe settings
+
+## Pin the version
+
+Use a tag that exists, like `@v0.2.2`. There's no `@v1` tag yet, so don't reference one.
+
+## Inputs
+
+| Input | Required | Default | What it is |
+|-------|----------|---------|------------|
+| `api_key` | Yes | | Your Open Cloud API key. |
+| `command` | No | `run` | `run`, `publish`, `validate`, or `export`. |
+| `config` | No | `rblxsync.yml` | Path to your config file. |
+| `args` | No | `""` | Extra flags, like `--dry-run`. |
+| `roblox_cookie` | No | `""` | Your `.ROBLOSECURITY` cookie. |
+
+One catch with `args`: it gets split on spaces with no way to quote anything. Stick to plain flags like `--dry-run`. Anything with a space in it will break apart.
+
+## Preview on pull requests, sync on main
+
+A nice setup: pull requests show you what would change, and only merges to `main` actually change it.
 
 ```yaml
-- name: Preview changes
-  uses: dig1t/rblxsync@v0.1.0
-  with:
-    api_key: ${{ secrets.ROBLOX_API_KEY }}
-    command: run
-    args: --dry-run
+name: Roblox
 
-- name: Sync with universe settings (requires cookie)
-  uses: dig1t/rblxsync@v0.1.0
-  with:
-    api_key: ${{ secrets.ROBLOX_API_KEY }}
-    roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
-    command: run
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  preview:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dig1t/rblxsync@v0.2.2
+        with:
+          api_key: ${{ secrets.ROBLOX_API_KEY }}
+          command: run
+          args: --dry-run
+
+  sync:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dig1t/rblxsync@v0.2.2
+        with:
+          api_key: ${{ secrets.ROBLOX_API_KEY }}
+          roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
+          command: run
 ```
 
-Store `ROBLOX_API_KEY` (and optionally `ROBLOX_COOKIE`) as repository secrets under **Settings → Secrets and variables → Actions**.
+One thing to remember: when the action creates something new, it writes IDs into `rblxsync.yml` and `rblxsync-lock.yml` on the runner, and those changes vanish when the job ends. Run `rblxsync run` on your own machine first and commit the result, so CI has the IDs already.
 
-Full input/output reference: [GitHub Action](/api#github-action).
+Full input list: [API reference](/api#github-action).
