@@ -6,8 +6,10 @@ name: Release
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths: ['VERSION']
+    branches:
+      - main
+    paths:
+      - VERSION
 
 permissions:
   contents: write
