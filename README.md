@@ -108,9 +108,6 @@ Then add `.env` to your `.gitignore`. **Never** put this key on GitHub. Anyone w
 
 ### 4. Find your universe ID
 
-The universe is your whole experience, and its ID is what rblxsync syncs against.
-It is not a place ID: places are the individual levels inside a universe.
-
 Open your experience on the Creator Hub. The number in the address bar is your universe ID:
 
 ```

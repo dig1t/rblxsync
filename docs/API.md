@@ -221,7 +221,7 @@ Roblox cannot list disabled badges. If a disabled badge already exists and your 
 
 | Field | Type | Required | Default | What it is |
 | --- | --- | --- | --- | --- |
-| `place_id` | number | **Yes** | | Which place to publish to. |
+| `place_id` | number | **Yes** | | Which place to publish to. A different number from `universe.id`, and you can find it in Studio with `print(game.PlaceId)`. |
 | `file_path` | string | **Yes** | | Path to a `.rbxl` or `.rbxlx` file. |
 | `publish` | boolean | No | `false` | Only `true` places are touched by `rblxsync publish`. |
 
