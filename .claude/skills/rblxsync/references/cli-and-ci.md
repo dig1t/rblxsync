@@ -1,22 +1,28 @@
-# rblxsync — CLI, Environment, CI, Permissions
+# rblxsync: CLI, Environment, CI, Permissions
 
 ## Installation
 
 The binary is `rblxsync`.
 
 ```bash
-# From source (works today)
-cargo install --path .
+# Recommended: tool-manager pin (Rokit / Aftman)
+rokit add dig1t/rblxsync@0.2.3
 
-# Tool managers — ONLY once binary releases exist. Pin to a published tag.
 #   rokit.toml / aftman.toml
 #   [tools]
-#   rblxsync = "dig1t/rblxsync@0.1.0"
+#   rblxsync = "dig1t/rblxsync@0.2.3"
+
+# Second choice: download a zip from the GitHub Releases page.
+# Fallback: build from source
+cargo install --path .
 ```
 
-> As of v0.1.0 there is no published binary-release pipeline — the GitHub Action
-> builds from source, and the source tag `v0.1.0` exists. Prefer **from source**
-> until pre-built binaries are published. Do not assume `rokit add` works yet.
+> Every `VERSION` bump publishes a release with four zips:
+> `rblxsync-v<version>-x86_64-unknown-linux-gnu.zip`, `-x86_64-apple-darwin.zip`
+> (Intel Mac), `-aarch64-apple-darwin.zip` (Apple Silicon), and
+> `-x86_64-pc-windows-msvc.zip`. Each zip holds a bare `rblxsync` executable
+> (`rblxsync.exe` on Windows), named so Aftman/Rokit resolve it. Verify the
+> install with `rblxsync --version` (prints `rblxsync 0.2.3`).
 
 ## CLI
 
@@ -24,52 +30,40 @@ cargo install --path .
 rblxsync [--config <PATH>] [COMMAND]
 ```
 
-The `--config` / `-c` flag is **global** and must come **before** the subcommand:
+The `--config` / `-c` flag is **global** (clap `global = true`) and works on
+either side of the subcommand:
 
 ```bash
-rblxsync --config production.yml run    # ✅ correct
-rblxsync run --config production.yml    # ✗ clap rejects this
+rblxsync --config production.yml run    # works
+rblxsync run --config production.yml    # identical
 ```
 
 If no subcommand is given, it defaults to `run` (not dry-run).
 
 ### `run [--dry-run]`
 
-Syncs universe settings + game passes, developer products, badges. Idempotent
-(match by `id` when an entry has one, else by name; create/PATCH). Icons re-upload
-only when their local SHA-256 differs from the lock file.
+Syncs universe settings + game passes, developer products, badges. Idempotent:
+an entry with an `id:` is matched by that id; without one, by name
+(case-insensitive); no match creates the resource and writes the new `id:` back
+into `rblxsync.yml` immediately. Icons re-upload only when their local SHA-256
+differs from the lock file.
 
-- **Preflight gate:** before any mutation (in both real and `--dry-run` mode)
-  `run` validates everything knowable up front and **aborts listing every
-  problem if any** — so a failed run never half-applies (no resources created,
-  no Robux spent). It checks: referenced icon files exist; passes/products with
-  an icon have a `creator:`; a badge that would be **created** has an icon
-  (Roblox requires one) and a `badge_payment_source`.
 - `--dry-run`: previews changes, makes **no** mutating HTTP calls, does **not**
-  write state, does **not** write `Config.luau`. Runs the preflight too, so a
-  preview surfaces the errors above. Always run this first.
+  write state, does **not** write `Config.luau`. Always run this first.
 - Requires `ROBLOX_COOKIE` if any `universe.*` setting is present (see below).
 - On success writes `rblxsync-lock.yml`, and regenerates `Config.luau` if
-  `output_path` is set. The lock file is also saved **incrementally after each
-  create**, and all writes (lock file and yml) are **atomic** (temp file +
-  rename), so a crash mid-write can't truncate either file.
-- When it **creates** a resource whose entry had no `id`, it writes the new `id`
-  back into that `rblxsync.yml` entry **immediately** (a surgical, comment-
-  preserving edit) — not batched at the end. So even if a later step fails, the
-  id is already recorded and the next run adopts by id instead of creating a
-  duplicate. If it can't locate the entry, it warns to run `import` to backfill
-  ids.
+  `output_path` is set.
 
-> **Path note:** the lock file is read from and written to the **config file's
-> parent directory**, so `--config sub/x.yml` keeps `rblxsync-lock.yml` next to
-> it and load/save always agree.
+> **Path note:** the lock file is *loaded* from the config file's parent dir but
+> *saved* to the current working directory. Run rblxsync from the directory that
+> holds `rblxsync-lock.yml` so state stays consistent.
 
 ### `publish`
 
-Publishes every place with `publish: true` (always a **Published** version — no
+Publishes every place with `publish: true` (always a **Published** version, no
 "Saved" option). Does NOT need the cookie. Per-place errors are logged but not
 fatal; a place with a missing `file_path` is skipped and the rest continue.
-Publishing makes the place live — confirm with the user.
+Publishing makes the place live; confirm with the user.
 
 ### `validate`
 
@@ -79,10 +73,11 @@ case-insensitive names. Exits `1` on failure.
 ### `export [-o/--output PATH] [--lua]`
 
 Pulls live game passes, products, badges and dumps a **flat** Luau/Lua table.
-Default filename `config.luau` (`config.lua` with `--lua` — content is identical;
+Default filename `config.luau` (`config.lua` with `--lua`; content is identical,
 `--lua` only changes the default name). This is a **one-way snapshot** for
-inspection/migration. It is NOT a valid `rblxsync.yml`, and NOT the richer shape
-that `run` writes to `output_path`. Flat shape:
+reading only. It is NOT a valid `rblxsync.yml`, and NOT the richer shape
+that `run` writes to `output_path`. To turn an existing game into a config, use
+`import` instead. Flat shape:
 
 ```lua
 return {
@@ -92,38 +87,24 @@ return {
 }
 ```
 
-### `import [--universe-id ID] [--place-id ID]… [--badge-id ID]…`
+### `import [--universe-id <id>] [--place-id <id>]... [--badge-id <id>]...`
 
-Pulls a live experience's metadata **down** into `rblxsync.yml` **and**
-`rblxsync-lock.yml` — the opposite direction of `run`. Use it to adopt rblxsync on
-an existing game, or to absorb a resource rblxsync doesn't know about yet. Unlike
-`export`, the output **is** a valid config you keep using.
+Pulls an existing experience down into **both** `rblxsync.yml` and
+`rblxsync-lock.yml`. This is how you adopt rblxsync on a game that already has
+live game passes, products, and badges, or absorb a resource rblxsync doesn't
+know about yet.
 
-- **Universe id:** `--universe-id <id>`, else `universe.id` from an existing
-  config; errors if neither is available.
-- **Reconciliation (destructive on conflicts):** remote is authoritative and
-  overwrites matching local entries (matched by `id`, else case-insensitive name);
-  entries that exist locally but not on remote are **kept**; lockfile entries that
-  are neither in the yml nor on remote are **dropped** as stale.
-- **Stable ids:** every imported game pass / developer product / badge is written
-  with its Roblox `id`, so they're immediately rename-safe.
-- **Backup:** an existing `rblxsync.yml` is renamed to `rblxsync.old.yml` (then
-  `rblxsync.old1.yml`, `.old2.yml`, …) before the new one is written. Comments in
-  the old file are not carried over — the backup is the record.
-- **Icons:** not imported (the asset can't be downloaded to a local file). Add an
-  `icon:` path later and the next `run` uploads it.
-- **Places:** the API key can only auto-discover the **root** place (added with
-  `file_path: ""`, `publish: false`). Pass `--place-id <id>` (repeatable) for
-  additional places; each is fetched via the universe-scoped place endpoint, which
-  also **verifies the place belongs to this experience** — an id from a different
-  experience (or a typo) is warned and skipped, not imported. `.rbxl` files still
-  can't be downloaded, so set each `file_path` manually before publishing.
-- **Badges:** Roblox's badge LIST endpoint **omits DISABLED badges**, so they
-  aren't auto-imported. Pass `--badge-id <id>` (repeatable) to pull each disabled
-  badge in by id — it's fetched via the badge detail endpoint (which does return
-  disabled badges) and **verified to belong to this experience** (mismatched id →
-  warned and skipped). Import warns when run without `--badge-id` as a reminder.
-- Needs only `ROBLOX_API_KEY` (no cookie).
+- `--universe-id` falls back to `universe.id` in an existing config if omitted.
+- `--place-id` is repeatable. The API key only auto-discovers the root place;
+  each extra place needs one flag.
+- `--badge-id` is repeatable. Roblox's badge listing omits **disabled** badges,
+  so a disabled badge can only be imported by id. Without it, a config naming a
+  disabled badge will create a duplicate.
+- Remote is authoritative on conflicts: remote values overwrite matching local
+  ones, local-only entries are kept, stale lock entries are dropped.
+- An existing `rblxsync.yml` is backed up to `rblxsync.old.yml` first (then
+  `rblxsync.old1.yml`, `.old2.yml`, ...).
+- Icons are not imported.
 
 ## Environment variables
 
@@ -146,30 +127,31 @@ ROBLOX_COOKIE=your_roblosecurity_cookie_here   # only if syncing universe settin
 1. Log into roblox.com in a browser.
 2. DevTools (F12) → Application → Cookies → copy the value of `.ROBLOSECURITY`.
 
-Anyone with this cookie can access the account — treat it like a password, store
+Anyone with this cookie can access the account. Treat it like a password, store
 it only in `.env` or a CI secret, never in the repo or chat. Don't fetch or echo
 it yourself; instruct the user to place it.
 
 ## Open Cloud API key permissions
 
-Universe **settings** updates do **not** use the API key — they use cookie auth
+Universe **settings** updates do **not** use the API key; they use cookie auth
 against `develop.roblox.com`. The API key needs these scopes:
 
 | Feature | Scope | Endpoint(s) |
 | --- | --- | --- |
 | Game Passes | read + write | `game-passes/v1/universes/{uid}/game-passes` |
 | Developer Products | read + write | `developer-products/v2/universes/{uid}/developer-products` |
-| Badges | read + create/manage | list via `badges.roblox.com/v1/universes/{uid}/badges` (**omits disabled badges**); `import --badge-id` reads `badges.roblox.com/v1/badges/{id}` (returns disabled too); create/update/icon via legacy `legacy-badges` / `legacy-publish` |
+| Badges | read + create/manage | list via `badges.roblox.com`; create/update/icon via legacy `legacy-badges` / `legacy-publish` |
 | Assets (icons) | upload | `POST /assets/v1/assets` (multipart), polled at `GET /assets/v1/{operation}` |
 | Places | publish | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
-| Universe / Places (import) | read | `GET /cloud/v2/universes/{uid}` and `GET /cloud/v2/universes/{uid}/places/{placeId}` |
 
 `429` responses are retried up to 3 times honoring `Retry-After`.
 
 ## GitHub Action
 
-Composite action: checks out rblxsync into `.rblxsync-action`, sets up stable
-Rust, caches cargo, builds `--release`, then runs
+Composite action: checks out rblxsync at the ref you pinned
+(`ref: ${{ github.action_ref }}`, so `uses: dig1t/rblxsync@v0.2.3` builds
+exactly that tag) into `.rblxsync-action`, sets up stable Rust, caches cargo,
+builds `--release`, then runs
 `rblxsync "$COMMAND" --config "$CONFIG" $ARGS`.
 
 ### Inputs
@@ -184,11 +166,11 @@ Rust, caches cargo, builds `--release`, then runs
 
 > **`args` word-splits and cannot be quoted.** Multiple flags like
 > `--dry-run --foo` split correctly, but **any single argument containing a space
-> is broken apart** — there is no quoting mechanism. Use only space-free flags.
+> is broken apart**; there is no quoting mechanism. Use only space-free flags.
 
-> **Pin to a published ref.** A `v0.1.0` tag exists; a moving `@v1` major tag is
-> **not** published. Do not reference `@v1` until it exists. `@main` works but is
-> unpinned.
+> **Pin to a published ref.** Published tags: `v0.1.0`, `v0.1.1`, `v0.2.2`, `v0.2.3`
+> (latest). A moving `@v1` major tag is **not** published. Do not reference
+> `@v1` until it exists. `@main` works but is unpinned.
 
 Store `ROBLOX_API_KEY` (and `ROBLOX_COOKIE` if needed) under
 **Settings → Secrets and variables → Actions**. See

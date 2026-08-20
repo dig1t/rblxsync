@@ -4,7 +4,7 @@
 
 When `output_path` is set, every successful `rblxsync run` regenerates a
 `--!strict` Luau module at that path. It's deterministic (resources sorted by id)
-and always emits the full type definitions plus tables — empty sections appear as
+and always emits the full type definitions plus tables; empty sections appear as
 empty tables, never omitted. Keys are **PascalCase**.
 
 ```lua
@@ -36,12 +36,12 @@ return {
 
 Key facts:
 
-- `DeveloperProduct` is exactly `{ Id, Name, Description, Price }` — there is
+- `DeveloperProduct` is exactly `{ Id, Name, Description, Price }`: there is
   **no** `IsActive` field. Don't type game code against one.
 - `PrivateServerCost` is a bare number for paid/free, or the string `"disabled"`.
 - `Genre` and `MaxPlayers` appear here for reference but were never pushed to
   Roblox by the sync.
-- Do **not** hand-edit this file — it is overwritten on every `run`. To change its
+- Do **not** hand-edit this file; it is overwritten on every `run`. To change its
   format you'd edit the tool's `src/output.rs`, not the output.
 
 ## Consuming it in-game
@@ -79,14 +79,15 @@ When editing a user's existing code, match their conventions (their own lookup
 helpers, module path aliases, naming). Don't introduce a new pattern if they
 already have one.
 
-## `export` output is different — don't confuse them
+## `export` output is different, don't confuse them
 
 `rblxsync export` writes a **flat, untyped** table with snake_case keys
 (`game_passes` / `developer_products` / `badges`; passes & products carry
 `name`/`id`/`price`, badges only `name`/`id`). It's a one-way snapshot for
-inspection or migrating an existing game into a config — it is NOT what game code
-should `require` long-term, and NOT a `rblxsync.yml`. Use the `output_path`
-`Config.luau` for in-game consumption.
+reading only; it is NOT what game code should `require` long-term, and NOT a
+`rblxsync.yml`. To adopt an existing game into a config, use `rblxsync import`,
+which writes `rblxsync.yml` and `rblxsync-lock.yml` directly. Use the
+`output_path` `Config.luau` for in-game consumption.
 
 ## Lock file (`rblxsync-lock.yml`)
 
@@ -96,22 +97,23 @@ SHA-256 hashes. Top-level keys: `universe`, `game_passes`, `developer_products`,
 
 - **Commit it.** It's how syncs stay idempotent across machines/CI and how icon
   change-detection works (only re-uploads when the hash differs).
-- **Never hand-edit it** — overwritten on the next sync. A missing file is treated
+- **Never hand-edit it**; overwritten on the next sync. A missing file is treated
   as empty default state (so the next sync will try to create everything fresh).
 
 ## Idempotency & renames
 
 - Re-running `rblxsync run` with an unchanged config is a no-op against Roblox
   (nothing to PATCH, no icon re-upload).
-- Matching is by a stable **`id`** when the entry has one, otherwise by **name**.
-  - With an `id`, changing the `name:` is a safe rename (matched by id, PATCHed).
-    `rblxsync import` writes ids for existing resources, and `run` stamps the id
-    back into an entry the first time it creates the resource.
-  - For an **id-less** entry, changing `name:` does NOT rename the Roblox resource
-    — rblxsync sees an unknown name and **creates a new one**, leaving the old one
-    behind. Backfill ids (run `rblxsync import`) before renaming, or warn the user
-    and handle the rename on Roblox's side (or accept the new resource + retire the
-    old).
+- Matching is **id-first**. An entry with an `id:` is matched by that id and its
+  `name:` is just a label, so renaming it is safe (the PATCH renames the Roblox
+  resource). An entry without an `id:` matches by name, case-insensitive.
+- On create, `run` writes the new `id:` back into `rblxsync.yml` immediately (a
+  surgical line insert that preserves comments, not a batched rewrite), so after
+  the first run every entry normally has one.
+- The duplicate hazard only remains for an entry with no `id:` yet: renaming it
+  makes rblxsync see an unknown name and **create a new resource**, leaving the
+  old one behind. Before renaming such an entry, make sure it has its `id:`
+  (it's there after the first run, or pull it with `rblxsync import`).
 
 ## Recommended repo hygiene
 

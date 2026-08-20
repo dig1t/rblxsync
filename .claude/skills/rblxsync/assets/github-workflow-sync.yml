@@ -4,8 +4,9 @@
 #   - ROBLOX_API_KEY  (required)
 #   - ROBLOX_COOKIE   (only if rblxsync.yml sets universe settings)
 #
-# Pin the action to a published ref. v0.1.0 exists; a moving @v1 tag does NOT
-# yet — do not use @v1 until it's published. @main works but is unpinned.
+# Pin the action to a published ref. v0.2.3 is the latest tag; a moving @v1 tag
+# does NOT exist yet. Do not use @v1 until it's published. @main works but is
+# unpinned.
 
 name: Sync Roblox Experience
 
@@ -26,10 +27,10 @@ jobs:
       - uses: actions/checkout@v4
 
       # Recommended: preview first on PRs / dry runs.
-      # The `args` input is appended UNQUOTED and word-splits — use only
+      # The `args` input is appended UNQUOTED and word-splits; use only
       # space-free flags. One arg containing a space will be broken apart.
       - name: Preview changes (dry run)
-        uses: dig1t/rblxsync@v0.1.0
+        uses: dig1t/rblxsync@v0.2.3
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
@@ -37,7 +38,7 @@ jobs:
           args: --dry-run
 
       - name: Sync Roblox metadata
-        uses: dig1t/rblxsync@v0.1.0
+        uses: dig1t/rblxsync@v0.2.3
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
