@@ -29,6 +29,30 @@ rblxsync checks Roblox for a game pass called "VIP Pass". If it isn't there, it 
 
 Run it again tomorrow and nothing breaks. It never makes a second copy of the same pass.
 
+## By hand vs with rblxsync
+
+Two game passes? Either way is fine. The gap opens up once you have thirty
+products, a test place, and other people touching the game.
+
+| What you need to do | Clicking through the Creator Hub | With rblxsync |
+|---|---|---|
+| Cut prices on 30 products for a weekend sale | 30 forms, 30 saves. Miss one and it sells at full price all weekend. | Change 30 numbers in one file, run it |
+| Put the IDs in your game code | Copy each number off a web page and paste it into Luau. One wrong digit prompts the wrong purchase. | The IDs land in a typed Luau file for you |
+| Set up a test universe | Recreate every pass, product, and badge by hand, then juggle two sets of IDs in your code | Copy the file, change `universe.id`, `rblxsync run --config dev.yml` |
+| Find out who dropped the VIP price last week | There's no history. Go ask people. | `git log -p rblxsync.yml` |
+| Undo a bad edit | Remember what the description used to say, retype it, hope | `git revert`, run again |
+| Add 12 badges for an event | 12 forms and 1200 Robux, and a typo means a badge you can't take back | 12 entries, checked with `--dry-run` before a single Robux moves |
+| Show a new teammate how monetization works | Hand over a login and hope | They read one file |
+
+The expensive mistake is the one nobody plans for: making the same thing twice.
+A pass created twice keeps selling under both IDs, so your sales numbers split in
+half, and Roblox lets you turn a badge off but never delete it. rblxsync matches
+on the `id:` it saved last time, and `--dry-run` shows you every create before it
+happens.
+
+Your config sits in git next to your code, so a price change is a line in a pull
+request someone can review, not a form somebody filled in at 2am.
+
 ## Two words you need
 
 - **Universe** is your whole experience. It has one ID that never changes.
