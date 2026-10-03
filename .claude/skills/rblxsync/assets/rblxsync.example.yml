@@ -5,7 +5,8 @@
 # Directory holding icon files referenced below (default: "assets").
 assets_dir: assets/icons/
 
-# Who pays the 100 Robux fee per NEW badge: "user" or "group". Only needed if you create badges.
+# Wallet a NEW badge is paid from once the game's 5 free badges a day are used: "user" or "group".
+# Only needed if you create badges. Paid badges also need `run --allow-paid-badges`.
 badge_payment_source: "user"
 
 # If set, every successful `rblxsync run` regenerates a typed Luau module here.
@@ -44,7 +45,7 @@ developer_products:
     is_active: true                 # parsed but NOT synced; has no effect today
 
 badges:
-  - name: "First Win"               # creating a NEW badge costs 100 Robux
+  - name: "First Win"               # a NEW badge is free 5 a day, then 100 Robux
     description: "Awarded for your first victory!"
     icon: "first_win.png"
     is_enabled: true

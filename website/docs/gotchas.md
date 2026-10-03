@@ -5,9 +5,11 @@ title: Gotchas
 
 # Things that will trip you up
 
-## Badges cost 100 Robux each
+## Badges are free 5 a day, then 100 Robux each
 
-Every single one, charged the moment rblxsync creates it. Set `badge_payment_source` to `"user"` or `"group"` so Roblox knows which wallet to pull from. Without it, badge creation fails.
+Roblox gives every game 5 free badges per day (GMT). Before it changes anything, rblxsync reads how many are left today and prints it. It creates badges for free while they last. If a run needs more, it stops before touching anything unless you pass `--allow-paid-badges`. Each badge goes out with the price rblxsync expects, so Roblox refuses it rather than charge a different amount.
+
+Set `badge_payment_source` to `"user"` or `"group"` so Roblox knows which wallet a paid badge comes out of. Without it, badge creation fails.
 
 ## Universe settings need a cookie
 
@@ -31,7 +33,7 @@ They get saved to the lock file and your `Config.luau`, and that's it. Change th
 
 ## `is_active` on developer products does nothing
 
-rblxsync reads it and ignores it. Game pass `is_for_sale` does work.
+rblxsync reads it and ignores it. Game pass `is_for_sale` does work, and a new pass with a price goes on sale unless you set `is_for_sale: false`.
 
 ## Run rblxsync from the folder that holds `rblxsync-lock.yml`
 

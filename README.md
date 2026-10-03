@@ -41,7 +41,7 @@ products, a test place, and other people touching the game.
 | Set up a test universe | Recreate every pass, product, and badge by hand, then juggle two sets of IDs in your code | Copy the file, change `universe.id`, `rblxsync run --config dev.yml` |
 | Find out who dropped the VIP price last week | There's no history. Go ask people. | `git log -p rblxsync.yml` |
 | Undo a bad edit | Remember what the description used to say, retype it, hope | `git revert`, run again |
-| Add 12 badges for an event | 12 forms and 1200 Robux, and a typo means a badge you can't take back | 12 entries, checked with `--dry-run` before a single Robux moves |
+| Add 12 badges for an event | 12 forms. Past the 5 free each day, every one costs 100 Robux, and a typo means a badge you can't take back | 12 entries, checked with `--dry-run`. It makes the free ones and stops before spending a single Robux |
 | Show a new teammate how monetization works | Hand over a login and hope | They read one file |
 
 The expensive mistake is the one nobody plans for: making the same thing twice.
@@ -321,7 +321,7 @@ rblxsync --config production.yml run
 
 | Command | What it does |
 |---------|--------------|
-| `rblxsync run` | Makes Roblox match your config. Add `--dry-run` to preview. This is what runs if you type just `rblxsync`. |
+| `rblxsync run` | Makes Roblox match your config. Add `--dry-run` to preview. This is what runs if you type just `rblxsync`. Badges past the day's 5 free ones need `--allow-paid-badges`. |
 | `rblxsync publish` | Uploads your `.rbxl` place files and publishes them live. |
 | `rblxsync import` | Pulls what's already on Roblox down into your config. |
 | `rblxsync validate` | Checks your YAML for typos. Doesn't touch the internet. |
@@ -336,11 +336,11 @@ Only `universe.id` is required. Everything else is optional.
 | `universe` | Your universe ID, plus name, description, genre, devices, max players, private server price. |
 | `game_passes` | One entry per game pass. |
 | `developer_products` | One entry per developer product. `price` is required here. |
-| `badges` | One entry per badge. Each new badge costs you **100 Robux**. |
+| `badges` | One entry per badge. New badges are free up to 5 a day, then cost **100 Robux** each. |
 | `places` | Place files for `rblxsync publish`. |
 | `assets_dir` | Folder your icon images live in. Defaults to `assets`. |
 | `creator` | Who owns uploaded icons. Only needed if you use icons. |
-| `badge_payment_source` | `"user"` or `"group"`. Who pays the 100 Robux for a new badge. |
+| `badge_payment_source` | `"user"` or `"group"`. Needed to create badges. The wallet a paid badge comes out of. |
 | `output_path` | Where to write the Luau file with all your IDs. |
 
 There's a full working example in [`rblxsync.example.yml`](rblxsync.example.yml), and every single field is listed in [docs/API.md](docs/API.md#configuration-schema).
@@ -355,11 +355,11 @@ For each pass, product, or badge:
 
 That write-back happens the moment the resource is created, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate.
 
-Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed.
+Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A new pass or product gets its icon in the same call that creates it.
 
 ## Things that will trip you up
 
-**Badges cost 100 Robux each.** Every single one. Set `badge_payment_source` to `"user"` or `"group"` so Roblox knows which wallet to pull from.
+**Badges are free 5 a day, then 100 Robux each.** Roblox gives every game 5 free badges per day (GMT). Before it changes anything, rblxsync reads how many are left today and prints it. It creates badges for free while they last. If a run needs more, it stops before touching anything unless you pass `--allow-paid-badges`. Each badge goes out with the price rblxsync expects, so Roblox refuses it rather than charge a different amount. Set `badge_payment_source` to `"user"` or `"group"` so Roblox knows which wallet a paid badge comes out of.
 
 **Universe settings need a cookie, not just an API key.** Roblox has no Open Cloud endpoint for changing your game's name or description, so rblxsync signs in with your browser cookie instead. If you set *any* field under `universe` besides `id`, you also need this in `.env`:
 
@@ -373,7 +373,7 @@ To get it: log into roblox.com, press F12, go to Application → Cookies, and co
 
 **`genre` and `max_players` never reach Roblox.** They get saved to the lock file and your `Config.luau`, and that's it. Change them in Studio or the Creator Hub.
 
-**`is_active` on developer products does nothing.** rblxsync reads it and ignores it. Game pass `is_for_sale` does work.
+**`is_active` on developer products does nothing.** rblxsync reads it and ignores it. Game pass `is_for_sale` does work, and a new pass with a price goes on sale unless you set `is_for_sale: false`.
 
 **Run rblxsync from the folder that holds `rblxsync-lock.yml`.** The lock file is read from wherever your config lives but written to whatever folder you're standing in. Those being different will confuse it.
 

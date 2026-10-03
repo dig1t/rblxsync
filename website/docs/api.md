@@ -31,7 +31,7 @@ Type `rblxsync` with no subcommand and you get `run` without `--dry-run`.
 ### `run`
 
 ```
-rblxsync run [--dry-run]
+rblxsync run [--dry-run] [--allow-paid-badges]
 ```
 
 Makes Roblox match your config. Safe to run as many times as you like.
@@ -39,6 +39,7 @@ Makes Roblox match your config. Safe to run as many times as you like.
 | Flag | What it does |
 | --- | --- |
 | `--dry-run` | Prints the plan and stops. No writes, no state saved, no `Config.luau` written. |
+| `--allow-paid-badges` | Lets badges past the day's free quota be created at 100 Robux each. Without it, a run that needs one stops before changing anything. |
 
 **How each resource is matched**
 
@@ -48,10 +49,13 @@ Makes Roblox match your config. Safe to run as many times as you like.
 
 That write-back is a surgical line insert. Your comments and formatting survive it, and it happens the instant the resource is created rather than at the end of the run. If a later step fails, the ID is already saved and the next run adopts it instead of making a second copy.
 
-**Icons** are only re-uploaded when the SHA-256 of the local file differs from the hash in the lock file.
+**Icons** are only re-uploaded when the SHA-256 of the local file differs from the hash in the lock file. A new game pass or developer product is created with its icon in the same request.
+
+**Badge cost.** Roblox gives each game 5 free badges per day (GMT), then charges 100 Robux a badge. When a run would create badges, it first reads how many free ones are left today and prints it. Badges past that count need `--allow-paid-badges`, or the run stops before changing anything. Each create sends the cost rblxsync expects (`expectedCost`, 0 while free ones last), and Roblox refuses, without charging, a badge whose real cost is different.
 
 **Other behavior**
 
+- A new game pass with a `price` is created on sale, unless its `is_for_sale` is `false`.
 - If any universe setting is present (`name`, `description`, `genre`, `playable_devices`, `max_players`, or `private_server_cost`), `run` requires `ROBLOX_COOKIE`. Without it, the command prints cookie setup instructions and exits `1`.
 - A successful run writes `rblxsync-lock.yml`.
 - If `output_path` is set, the Luau module is regenerated after the sync.
@@ -153,7 +157,7 @@ The config is `rblxsync.yml` unless `--config` says otherwise.
 | `developer_products` | list | No | `[]` | Developer products to sync. |
 | `badges` | list | No | `[]` | Badges to sync. |
 | `places` | list | No | `[]` | Places available to `publish`. |
-| `badge_payment_source` | string | No | | `"user"` or `"group"`. Who pays the 100 Robux per new badge. |
+| `badge_payment_source` | string | No | | `"user"` or `"group"`. Needed to create badges. The wallet a badge past the free daily quota is paid from. |
 | `output_path` | string | No | | Where `run` writes the typed Luau module, e.g. `src/shared/Config.luau`. |
 
 ### `creator`
@@ -196,7 +200,7 @@ Negative numbers and anything above `u32::MAX` are rejected when the file is par
 | `description` | string | No | Shown on the pass. |
 | `price` | number | No | Robux. Defaults to `0` when created. |
 | `icon` | string | No | Filename inside `assets_dir`. |
-| `is_for_sale` | boolean | No | Whether it's buyable. This one is synced. |
+| `is_for_sale` | boolean | No | Whether it's buyable. This one is synced. Left out, a new pass with a `price` is created on sale. |
 
 ### `developer_products[]`
 
@@ -219,7 +223,7 @@ Negative numbers and anything above `u32::MAX` are rejected when the file is par
 | `icon` | string | No | Filename inside `assets_dir`. |
 | `is_enabled` | boolean | No | Sent as `enabled` when patching. |
 
-Creating a badge costs 100 Robux and needs `badge_payment_source`. If it's missing, rblxsync turns the API error into a readable message.
+Creating a badge needs `badge_payment_source`. It's free while the game has free badges left today, and 100 Robux after that, which rblxsync only spends with `--allow-paid-badges`. See the badge cost note under [`run`](#run).
 
 Roblox cannot list disabled badges. If a disabled badge already exists and your config only names it, rblxsync will not see it and will create a duplicate. Give the entry an `id:` (or run `rblxsync import --badge-id <id>`) to adopt it instead.
 
@@ -501,7 +505,7 @@ The API key needs these scopes:
 | --- | --- | --- |
 | Game passes | read + write | `GET`/`POST`/`PATCH .../game-passes/v1/universes/{uid}/game-passes` |
 | Developer products | read + write | `GET`/`POST`/`PATCH .../developer-products/v2/universes/{uid}/developer-products` |
-| Badges | read + create/manage | List via `badges.roblox.com/v1/universes/{uid}/badges`; create, update, and icon through the legacy `legacy-badges` / `legacy-publish` endpoints |
+| Badges | read + create/manage | List via `badges.roblox.com/v1/universes/{uid}/badges` and the free quota via `.../free-badges-quota` (no auth); create, update, and icon through the legacy `legacy-badges` / `legacy-publish` endpoints |
 | Assets (icons) | upload | `POST /assets/v1/assets` (multipart), then polled at `GET /assets/v1/{operation}` |
 | Places | publish | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
 

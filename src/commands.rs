@@ -12,6 +12,34 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// Robux Roblox charges for a badge once the universe's free daily quota is
+/// used up.
+const BADGE_COST_ROBUX: u64 = 100;
+
+/// What the badges a run creates may cost: how many are free today, and
+/// whether the rest may be bought.
+#[derive(Debug, Clone, Copy, Default)]
+struct BadgeBudget {
+    /// Free badges left today (UTC). `None` when it wasn't read: no badge to
+    /// create, or a dry run that couldn't reach the quota endpoint.
+    free_left: Option<u64>,
+    /// `--allow-paid-badges`: badges past the free quota may cost Robux.
+    allow_paid: bool,
+}
+
+impl BadgeBudget {
+    /// Robux the next badge costs, or `None` when the quota wasn't read.
+    fn next_cost(&self) -> Option<u64> {
+        self.free_left
+            .map(|left| if left > 0 { 0 } else { BADGE_COST_ROBUX })
+    }
+
+    /// Counts one badge against the free quota.
+    fn spend_one(&mut self) {
+        self.free_left = self.free_left.map(|left| left.saturating_sub(1));
+    }
+}
+
 /// Validate the configuration for errors (including case-insensitive duplicate names)
 pub fn validate(config: &RblxSyncConfig) -> Result<()> {
     // Check for duplicate game pass names (case-insensitive)
@@ -60,15 +88,18 @@ fn remote_name_set(
 /// Read-only preflight run before any mutation. Validates everything knowable up
 /// front so a destructive `run` never half-applies: referenced icon files must
 /// exist, icons on passes/products need a `creator`, and a badge that would be
-/// CREATED needs an icon (Roblox rejects creation without one) plus a payment
-/// source. Aborts listing every problem; makes no changes.
+/// CREATED needs an icon (Roblox rejects creation without one), a payment
+/// source, and a free slot in today's badge quota unless paid badges are
+/// allowed. Aborts listing every problem; makes no changes. Returns the badge
+/// budget `sync_badges` creates against.
 async fn preflight(
     universe_id: u64,
     config: &RblxSyncConfig,
     state: &SyncState,
     client: &RobloxClient,
     dry_run: bool,
-) -> Result<()> {
+    allow_paid_badges: bool,
+) -> Result<BadgeBudget> {
     let assets_dir = Path::new(&config.assets_dir);
     let mut errors: Vec<String> = Vec::new();
 
@@ -115,6 +146,7 @@ async fn preflight(
         dry_run,
         "badges",
     )?;
+    let mut new_badges: Vec<&str> = Vec::new();
     for b in &config.badges {
         if let Some(icon) = &b.icon {
             let path = assets_dir.join(icon);
@@ -138,10 +170,59 @@ async fn preflight(
             }
             if config.badge_payment_source.is_none() {
                 errors.push(format!(
-                    "Badge '{}': new badges cost 100 Robux and require `badge_payment_source: \"user\"` or `\"group\"`",
+                    "Badge '{}': new badges require `badge_payment_source: \"user\"` or `\"group\"` (the wallet a badge past the free daily quota is paid from)",
                     b.name
                 ));
             }
+            new_badges.push(&b.name);
+        }
+    }
+
+    let mut budget = BadgeBudget {
+        free_left: None,
+        allow_paid: allow_paid_badges,
+    };
+    if !new_badges.is_empty() {
+        match client.get_free_badges_quota(universe_id).await {
+            Ok(left) => {
+                info!(
+                    "Badges: {} to create; universe {} has {} free badge(s) left today (resets 00:00 UTC), then {} Robux each",
+                    new_badges.len(),
+                    universe_id,
+                    left,
+                    BADGE_COST_ROBUX
+                );
+                // Config order decides which badges get the free slots, the
+                // same order sync_badges creates them in.
+                let free = usize::try_from(left).unwrap_or(usize::MAX);
+                let paid: Vec<&str> = new_badges.iter().skip(free).copied().collect();
+                if !paid.is_empty() {
+                    if allow_paid_badges {
+                        warn!(
+                            "{} badge(s) past the free quota will cost {} Robux each (--allow-paid-badges): {}",
+                            paid.len(),
+                            BADGE_COST_ROBUX,
+                            paid.join(", ")
+                        );
+                    } else {
+                        for name in paid {
+                            errors.push(format!(
+                                "Badge '{}': would cost {} Robux, past today's free badge quota. Wait for the reset at 00:00 UTC, or rerun with --allow-paid-badges to pay",
+                                name, BADGE_COST_ROBUX
+                            ));
+                        }
+                    }
+                }
+                budget.free_left = Some(left);
+            }
+            Err(e) if dry_run => warn!(
+                "Preflight: could not read the free badge quota (dry-run; badge costs unknown): {}",
+                e
+            ),
+            Err(e) => errors.push(format!(
+                "Could not read today's free badge quota, so the cost of new badges is unknown: {:#}",
+                e
+            )),
         }
     }
 
@@ -159,15 +240,18 @@ async fn preflight(
     }
 
     info!("Preflight checks passed.");
-    Ok(())
+    Ok(budget)
 }
 
+/// `allow_paid_badges` lets badges past the free daily quota be created at
+/// [`BADGE_COST_ROBUX`] each; without it the run stops before changing anything.
 pub async fn run(
     config: RblxSyncConfig,
     mut state: SyncState,
     client: RobloxClient,
     cookie_client: Option<RobloxCookieClient>,
     dry_run: bool,
+    allow_paid_badges: bool,
     config_path: &Path,
 ) -> Result<()> {
     info!("Starting sync... (dry_run: {})", dry_run);
@@ -180,7 +264,15 @@ pub async fn run(
     // Preflight: catch everything knowable BEFORE any mutation, so a failed
     // run never half-applies (no resources created, no Robux spent on a config
     // that can't fully succeed). Runs in dry-run too, so previews surface these.
-    preflight(universe_id, &config, &state, &client, dry_run).await?;
+    let badge_budget = preflight(
+        universe_id,
+        &config,
+        &state,
+        &client,
+        dry_run,
+        allow_paid_badges,
+    )
+    .await?;
 
     // Update Universe Settings (requires cookie client)
     if config.universe.has_settings() {
@@ -219,6 +311,7 @@ pub async fn run(
         &client,
         dry_run,
         config_path,
+        badge_budget,
     )
     .await?;
 
@@ -1118,6 +1211,13 @@ async fn sync_game_passes(
             }
         }
 
+        // Determine ID. An explicit config `id` is authoritative and never
+        // creates; otherwise fall back to state-by-name -> remote-by-name ->
+        // create (case-insensitive matching).
+        let state_id = state_lookup.map(|(id, _)| id);
+        let remote_entry = remote_map.get(&pass.name.to_lowercase());
+        let is_new = pass.id.is_none() && state_id.is_none() && remote_entry.is_none();
+
         // Handle Icon - calculate hash and check for changes
         if let Some(icon_path_str) = &pass.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
@@ -1130,8 +1230,9 @@ async fn sync_game_passes(
                 asset_id = state_entry.and_then(|s| s.icon_asset_id);
                 icon_hash = Some(current_hash);
                 icon_changed = false;
-            } else if dry_run {
-                asset_id = Some(0);
+            } else if dry_run || is_new {
+                // Nothing to upload here: a dry run uploads nothing, and a new
+                // pass sends the file with its create request below.
                 icon_hash = Some(current_hash);
                 icon_changed = true;
                 changes.push("icon");
@@ -1146,13 +1247,6 @@ async fn sync_game_passes(
                 changes.push("icon");
             }
         }
-
-        // Determine ID. An explicit config `id` is authoritative and never
-        // creates; otherwise fall back to state-by-name -> remote-by-name ->
-        // create (case-insensitive matching).
-        let state_id = state_lookup.map(|(id, _)| id);
-        let remote_entry = remote_map.get(&pass.name.to_lowercase());
-        let is_new = pass.id.is_none() && state_id.is_none() && remote_entry.is_none();
         let has_changes = !changes.is_empty();
 
         let id = if let Some(cid) = pass.id {
@@ -1163,9 +1257,9 @@ async fn sync_game_passes(
             *rid
         } else if dry_run {
             info!(
-                "  [CREATE] Game Pass '{}' - would create with: name, description, price{}",
+                "  [CREATE] Game Pass '{}' - would create with: {}",
                 pass.name,
-                if pass.icon.is_some() { ", icon" } else { "" }
+                new_pass_fields(pass)
             );
             created_count += 1;
             0
@@ -1175,11 +1269,15 @@ async fn sync_game_passes(
                 "description": pass.description.clone().unwrap_or_default(),
                 "price": pass.price.unwrap_or(0),
             });
-            if let Some(aid) = asset_id {
-                body["iconAssetId"] = aid.into();
+            if let Some(for_sale) = new_pass_for_sale(pass) {
+                body["isForSale"] = for_sale.into();
             }
+            let image = match &pass.icon {
+                Some(icon) => Some(read_icon(&Path::new(&config.assets_dir).join(icon)).await?),
+                None => None,
+            };
 
-            let resp = client.create_game_pass(universe_id, &body).await?;
+            let resp = client.create_game_pass(universe_id, &body, image).await?;
             // Roblox's create-game-pass endpoint returns `gamePassId`, not `id`.
             // Without this fallback the resource is created on Roblox but
             // sync reports failure — the lock file misses the ID and the
@@ -1189,11 +1287,14 @@ async fn sync_game_passes(
                 .or_else(|| resp["gamePassId"].as_u64())
                 .or_else(|| resp["gamePassId"].as_str().and_then(|s| s.parse().ok()))
                 .ok_or_else(|| anyhow!("Created game pass has no ID. Response: {}", resp))?;
+            if pass.icon.is_some() {
+                asset_id = resp["iconAssetId"].as_u64();
+            }
             info!(
-                "  [CREATED] Game Pass '{}' (ID: {}) - created with: name, description, price{}",
+                "  [CREATED] Game Pass '{}' (ID: {}) - created with: {}",
                 pass.name,
                 new_id,
-                if pass.icon.is_some() { ", icon" } else { "" }
+                new_pass_fields(pass)
             );
             created_count += 1;
             // Persist the new id into the yml right now (entries with an
@@ -1391,6 +1492,12 @@ async fn sync_developer_products(
             }
         }
 
+        // Determine ID. An explicit config `id` is authoritative and never
+        // creates; otherwise state-by-name -> remote-by-name -> create.
+        let state_id = state_lookup.map(|(id, _)| id);
+        let remote_entry = remote_map.get(&prod.name.to_lowercase());
+        let is_new = prod.id.is_none() && state_id.is_none() && remote_entry.is_none();
+
         if let Some(icon_path_str) = &prod.icon {
             let icon_path = Path::new(&config.assets_dir).join(icon_path_str);
             let current_hash = calculate_file_hash(&icon_path).await?;
@@ -1402,8 +1509,9 @@ async fn sync_developer_products(
                 asset_id = state_entry.and_then(|s| s.icon_asset_id);
                 icon_hash = Some(current_hash);
                 icon_changed = false;
-            } else if dry_run {
-                asset_id = Some(0);
+            } else if dry_run || is_new {
+                // Nothing to upload here: a dry run uploads nothing, and a new
+                // product sends the file with its create request below.
                 icon_hash = Some(current_hash);
                 icon_changed = true;
                 changes.push("icon");
@@ -1418,12 +1526,6 @@ async fn sync_developer_products(
                 changes.push("icon");
             }
         }
-
-        // Determine ID. An explicit config `id` is authoritative and never
-        // creates; otherwise state-by-name -> remote-by-name -> create.
-        let state_id = state_lookup.map(|(id, _)| id);
-        let remote_entry = remote_map.get(&prod.name.to_lowercase());
-        let is_new = prod.id.is_none() && state_id.is_none() && remote_entry.is_none();
         let has_changes = !changes.is_empty();
 
         let id = if let Some(cid) = prod.id {
@@ -1441,15 +1543,18 @@ async fn sync_developer_products(
             created_count += 1;
             0
         } else {
-            let mut body = serde_json::json!({
+            let body = serde_json::json!({
                 "name": prod.name,
                 "price": prod.price,
                 "description": prod.description.clone().unwrap_or_default(),
             });
-            if let Some(aid) = asset_id {
-                body["iconAssetId"] = aid.into();
-            }
-            let resp = client.create_developer_product(universe_id, &body).await?;
+            let image = match &prod.icon {
+                Some(icon) => Some(read_icon(&Path::new(&config.assets_dir).join(icon)).await?),
+                None => None,
+            };
+            let resp = client
+                .create_developer_product(universe_id, &body, image)
+                .await?;
             // Same as game-pass create: the endpoint returns `productId`.
             // Legacy field shapes covered for resilience.
             let new_id = resp["id"]
@@ -1458,6 +1563,9 @@ async fn sync_developer_products(
                 .or_else(|| resp["developerProductId"].as_u64())
                 .or_else(|| resp["ProductId"].as_u64())
                 .ok_or_else(|| anyhow!("Created product has no ID. Response: {}", resp))?;
+            if prod.icon.is_some() {
+                asset_id = resp["iconImageAssetId"].as_u64();
+            }
             info!("  [CREATED] Developer Product '{}' (ID: {}) - created with: name, price, description{}",
                 prod.name, new_id,
                 if prod.icon.is_some() { ", icon" } else { "" });
@@ -1565,6 +1673,8 @@ async fn sync_developer_products(
     Ok(())
 }
 
+/// `budget` is what [`preflight`] read: badges are created free while
+/// `free_left` lasts, then at [`BADGE_COST_ROBUX`] only with `allow_paid`.
 async fn sync_badges(
     universe_id: u64,
     config: &RblxSyncConfig,
@@ -1572,6 +1682,7 @@ async fn sync_badges(
     client: &RobloxClient,
     dry_run: bool,
     config_path: &Path,
+    mut budget: BadgeBudget,
 ) -> Result<()> {
     info!("Syncing Badges...");
 
@@ -1713,11 +1824,15 @@ async fn sync_badges(
         } else if let Some((_, rid)) = remote_entry {
             *rid
         } else if dry_run {
+            let cost = budget.next_cost();
+            refuse_unpaid_badge(&badge.name, cost, budget.allow_paid)?;
             info!(
-                "  [CREATE] Badge '{}' - would create with: name, description{}",
+                "  [CREATE] Badge '{}' - would create with: name, description{} ({})",
                 badge.name,
-                if badge.icon.is_some() { ", icon" } else { "" }
+                if badge.icon.is_some() { ", icon" } else { "" },
+                badge_cost_label(cost)
             );
+            budget.spend_one();
             created_count += 1;
             0
         } else {
@@ -1734,6 +1849,17 @@ async fn sync_badges(
                 ));
             }
 
+            // Sent as `expectedCost`: Roblox refuses, without charging, a
+            // create whose real cost differs, so a stale quota can't spend
+            // Robux.
+            let expected_cost = budget.next_cost().ok_or_else(|| {
+                anyhow!(
+                    "Badge '{}' was not created: today's free badge quota wasn't read, so its cost is unknown. Run again.",
+                    badge.name
+                )
+            })?;
+            refuse_unpaid_badge(&badge.name, Some(expected_cost), budget.allow_paid)?;
+
             let image_for_create = icon_data
                 .as_ref()
                 .map(|(data, filename, _)| (data.clone(), filename.clone()));
@@ -1745,6 +1871,7 @@ async fn sync_badges(
                     badge.description.as_deref().unwrap_or(""),
                     image_for_create,
                     config.badge_payment_source.as_deref(),
+                    expected_cost,
                 )
                 .await;
 
@@ -1760,7 +1887,7 @@ async fn sync_badges(
                             badge.name
                         );
                         error!("");
-                        error!("Creating badges costs 100 Robux. Please add the following to your rblxsync.yml:");
+                        error!("New badges need a payment source, the wallet a badge past the free daily quota is paid from. Add one of these to your rblxsync.yml:");
                         error!("");
                         error!("  badge_payment_source: \"user\"   # Pay from your user account");
                         error!("  # OR");
@@ -1779,6 +1906,23 @@ async fn sync_badges(
                             e
                         ));
                     }
+                    if err_str.contains("code\":18") {
+                        return Err(anyhow!(
+                            "Badge '{}' was not created: Roblox says it doesn't cost the {} Robux rblxsync expected, so nothing was charged. \
+                             The free badge quota may have changed during the run; run again to read it. ({})",
+                            badge.name,
+                            expected_cost,
+                            e
+                        ));
+                    }
+                    if err_str.contains("code\":17") {
+                        return Err(anyhow!(
+                            "Badge '{}' was not created: the payment source doesn't have the {} Robux it costs. ({})",
+                            badge.name,
+                            expected_cost,
+                            e
+                        ));
+                    }
                     return Err(anyhow!("Badge '{}' creation failed: {}", badge.name, e));
                 }
             };
@@ -1791,11 +1935,13 @@ async fn sync_badges(
                 .or_else(|| resp["badgeId"].as_u64())
                 .or_else(|| resp["assetId"].as_u64())
                 .ok_or_else(|| anyhow!("Created badge has no ID. Response: {}", resp))?;
+            budget.spend_one();
             info!(
-                "  [CREATED] Badge '{}' (ID: {}) - created with: name, description{}",
+                "  [CREATED] Badge '{}' (ID: {}) - created with: name, description{} ({})",
                 badge.name,
                 new_id,
-                if badge.icon.is_some() { ", icon" } else { "" }
+                if badge.icon.is_some() { ", icon" } else { "" },
+                badge_cost_label(Some(expected_cost))
             );
             created_count += 1;
             // Roblox's badge create endpoint 500s when called back-to-back
@@ -1889,7 +2035,76 @@ async fn sync_badges(
         "Badges Summary: {} created, {} updated, {} skipped (unchanged)",
         created_count, updated_count, skipped_count
     );
+    if created_count > 0 {
+        if let Some(left) = budget.free_left {
+            info!(
+                "Free badges left today{}: {} (resets 00:00 UTC)",
+                if dry_run { " after a real run" } else { "" },
+                left
+            );
+        }
+    }
     Ok(())
+}
+
+/// Refuses a badge that would cost Robux unless `--allow-paid-badges` was
+/// passed.
+fn refuse_unpaid_badge(name: &str, cost: Option<u64>, allow_paid: bool) -> Result<()> {
+    match cost {
+        Some(robux) if robux > 0 && !allow_paid => Err(anyhow!(
+            "Badge '{}' would cost {} Robux, past today's free badge quota, so it was not created. \
+             Wait for the reset at 00:00 UTC, or rerun with --allow-paid-badges to pay",
+            name,
+            robux
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// How a badge create is paid for, for the create log lines.
+fn badge_cost_label(cost: Option<u64>) -> String {
+    match cost {
+        Some(0) => "free, from today's quota".to_string(),
+        Some(robux) => format!("costs {} Robux", robux),
+        None => "cost unknown: the free badge quota wasn't read".to_string(),
+    }
+}
+
+/// Sale state a new game pass is created with. Roblox creates a pass off sale
+/// unless the request says otherwise, so a priced pass goes on sale unless the
+/// config sets `is_for_sale: false`.
+fn new_pass_for_sale(pass: &GamePassConfig) -> Option<bool> {
+    pass.is_for_sale.or(match pass.price {
+        Some(price) if price > 0 => Some(true),
+        _ => None,
+    })
+}
+
+/// Fields a new game pass is created with, for the create log lines.
+fn new_pass_fields(pass: &GamePassConfig) -> String {
+    let mut fields = String::from("name, description, price");
+    match new_pass_for_sale(pass) {
+        Some(true) => fields.push_str(", on sale"),
+        Some(false) => fields.push_str(", off sale"),
+        None => {}
+    }
+    if pass.icon.is_some() {
+        fields.push_str(", icon");
+    }
+    fields
+}
+
+/// An icon file's bytes and file name, for a multipart upload.
+async fn read_icon(path: &Path) -> Result<(Vec<u8>, String)> {
+    let data = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("Failed to read icon {:?}", path))?;
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    Ok((data, filename))
 }
 
 /// Check for duplicate names (case-insensitive) in a list
@@ -2053,6 +2268,7 @@ pub async fn export(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::multipart_field;
     use crate::config::{BadgeConfig, GamePassConfig, UniverseConfig};
     use serde_json::json;
     use wiremock::matchers::{method, path};
@@ -2287,6 +2503,7 @@ mod tests {
             &client(&server),
             true,
             Path::new("/nonexistent/rblxsync.yml"),
+            BadgeBudget::default(),
         )
         .await
         .unwrap();
@@ -2332,6 +2549,7 @@ mod tests {
             &client(&server),
             false,
             Path::new("/nonexistent/rblxsync.yml"),
+            BadgeBudget::default(),
         )
         .await
         .unwrap_err();
@@ -2372,7 +2590,7 @@ mod tests {
         }];
         let state = SyncState::default();
 
-        let err = preflight(1, &config, &state, &client(&server), false)
+        let err = preflight(1, &config, &state, &client(&server), false, false)
             .await
             .unwrap_err();
         let msg = err.to_string();
@@ -2408,7 +2626,7 @@ mod tests {
         }];
         let state = SyncState::default();
 
-        let err = preflight(1, &config, &state, &client(&server), false)
+        let err = preflight(1, &config, &state, &client(&server), false, false)
             .await
             .unwrap_err();
         let msg = err.to_string();
@@ -2428,6 +2646,7 @@ mod tests {
             )
             .mount(&server)
             .await;
+        mount_free_badges_quota(&server, 5).await;
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("vip.png"), b"img").unwrap();
@@ -2456,9 +2675,10 @@ mod tests {
         }];
         let state = SyncState::default();
 
-        preflight(1, &config, &state, &client(&server), false)
+        let budget = preflight(1, &config, &state, &client(&server), false, false)
             .await
             .unwrap();
+        assert_eq!(budget.free_left, Some(5));
     }
 
     // --- import command tests ---
@@ -2993,5 +3213,402 @@ mod tests {
         let written = std::fs::read_to_string(&cfg).unwrap();
         assert!(written.contains("# the premium pass"), "got: {}", written);
         assert!(written.contains("id: 5005"), "got: {}", written);
+    }
+
+    // --- create payloads: sale state, icons, badge cost ---
+
+    async fn mount_free_badges_quota(server: &MockServer, left: u64) {
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/free-badges-quota"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(left.to_string()))
+            .mount(server)
+            .await;
+    }
+
+    /// Bodies of the requests the mock server got for `verb` on `url_path`.
+    async fn bodies(server: &MockServer, verb: &str, url_path: &str) -> Vec<Vec<u8>> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.method.as_str() == verb && r.url.path() == url_path)
+            .map(|r| r.body)
+            .collect()
+    }
+
+    /// An assets dir holding `files`, each written with `<stem>-png` bytes.
+    fn assets_with(files: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for file in files {
+            let stem = file.trim_end_matches(".png");
+            std::fs::write(dir.path().join(file), format!("{}-png", stem)).unwrap();
+        }
+        dir
+    }
+
+    fn badge(name: &str, icon: &str) -> BadgeConfig {
+        BadgeConfig {
+            id: None,
+            name: name.to_string(),
+            description: Some("Earned it".to_string()),
+            icon: Some(icon.to_string()),
+            is_enabled: Some(true),
+        }
+    }
+
+    #[test]
+    fn new_pass_for_sale_follows_price_unless_set() {
+        assert_eq!(
+            new_pass_for_sale(&game_pass("Priced", Some(199))),
+            Some(true)
+        );
+        assert_eq!(new_pass_for_sale(&game_pass("No price", None)), None);
+        assert_eq!(new_pass_for_sale(&game_pass("Zero", Some(0))), None);
+
+        let mut held_back = game_pass("Held back", Some(199));
+        held_back.is_for_sale = Some(false);
+        assert_eq!(new_pass_for_sale(&held_back), Some(false));
+    }
+
+    // A new pass is created on sale with its icon file, without a separate
+    // asset upload whose id the create endpoint would ignore.
+    #[tokio::test]
+    async fn create_game_pass_sends_sale_state_and_icon() {
+        let server = MockServer::start().await;
+        mount_empty_game_pass_list(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/game-passes/v1/universes/1/game-passes"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"gamePassId": 5005, "iconAssetId": 777})),
+            )
+            .mount(&server)
+            .await;
+        // Any other POST (an asset upload) fails the run.
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let assets = assets_with(&["vip.png"]);
+        let mut config = base_config();
+        config.assets_dir = assets.path().to_string_lossy().to_string();
+        let mut pass = game_pass("VIP", Some(199));
+        pass.icon = Some("vip.png".to_string());
+        config.game_passes = vec![pass];
+        let mut state = SyncState::default();
+
+        sync_game_passes(
+            1,
+            &config,
+            &mut state,
+            &client(&server),
+            false,
+            &assets.path().join("rblxsync.yml"),
+        )
+        .await
+        .unwrap();
+
+        let creates = bodies(&server, "POST", "/game-passes/v1/universes/1/game-passes").await;
+        assert_eq!(creates.len(), 1);
+        let body = &creates[0];
+        assert_eq!(multipart_field(body, "isForSale").as_deref(), Some("true"));
+        assert_eq!(multipart_field(body, "price").as_deref(), Some("199"));
+        assert_eq!(
+            multipart_field(body, "imageFile").as_deref(),
+            Some("vip-png")
+        );
+        assert_eq!(multipart_field(body, "iconAssetId"), None);
+        assert!(bodies(&server, "POST", "/assets/v1/assets")
+            .await
+            .is_empty());
+
+        let created = state.game_passes.get(&5005).unwrap();
+        assert_eq!(created.icon_asset_id, Some(777));
+        assert!(created.icon_hash.is_some());
+    }
+
+    #[tokio::test]
+    async fn create_developer_product_sends_icon() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/developer-products/v2/universes/1/developer-products/creator",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"developerProducts": [], "nextPageToken": null})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(
+                "/developer-products/v2/universes/1/developer-products",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"productId": 7007, "iconImageAssetId": 888})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let assets = assets_with(&["coins.png"]);
+        let mut config = base_config();
+        config.assets_dir = assets.path().to_string_lossy().to_string();
+        config.developer_products = vec![DeveloperProductConfig {
+            id: None,
+            name: "400 Coins".to_string(),
+            description: Some("A small pouch of coins".to_string()),
+            price: 49,
+            icon: Some("coins.png".to_string()),
+            is_active: None,
+        }];
+        let mut state = SyncState::default();
+
+        sync_developer_products(
+            1,
+            &config,
+            &mut state,
+            &client(&server),
+            false,
+            &assets.path().join("rblxsync.yml"),
+        )
+        .await
+        .unwrap();
+
+        let creates = bodies(
+            &server,
+            "POST",
+            "/developer-products/v2/universes/1/developer-products",
+        )
+        .await;
+        assert_eq!(creates.len(), 1);
+        let body = &creates[0];
+        assert_eq!(multipart_field(body, "price").as_deref(), Some("49"));
+        assert_eq!(
+            multipart_field(body, "imageFile").as_deref(),
+            Some("coins-png")
+        );
+        assert_eq!(multipart_field(body, "iconAssetId"), None);
+        assert_eq!(
+            state.developer_products.get(&7007).unwrap().icon_asset_id,
+            Some(888)
+        );
+    }
+
+    async fn mount_empty_badge_list(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/badges"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"badges": [], "nextPageCursor": null})),
+            )
+            .mount(server)
+            .await;
+    }
+
+    async fn sync_one_badge(
+        server: &MockServer,
+        assets: &tempfile::TempDir,
+        dry_run: bool,
+        budget: BadgeBudget,
+    ) -> Result<SyncState> {
+        let mut config = base_config();
+        config.assets_dir = assets.path().to_string_lossy().to_string();
+        config.badge_payment_source = Some("user".to_string());
+        config.badges = vec![badge("First Focus", "badge.png")];
+        let mut state = SyncState::default();
+        sync_badges(
+            1,
+            &config,
+            &mut state,
+            &client(server),
+            dry_run,
+            &assets.path().join("rblxsync.yml"),
+            budget,
+        )
+        .await
+        .map(|_| state)
+    }
+
+    #[tokio::test]
+    async fn create_badge_inside_free_quota_expects_cost_zero() {
+        let server = MockServer::start().await;
+        mount_empty_badge_list(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/legacy-badges/v1/universes/1/badges"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 9001})))
+            .mount(&server)
+            .await;
+
+        let assets = assets_with(&["badge.png"]);
+        let budget = BadgeBudget {
+            free_left: Some(2),
+            allow_paid: false,
+        };
+        let state = sync_one_badge(&server, &assets, false, budget)
+            .await
+            .unwrap();
+
+        let creates = bodies(&server, "POST", "/legacy-badges/v1/universes/1/badges").await;
+        assert_eq!(creates.len(), 1);
+        let body = &creates[0];
+        assert_eq!(multipart_field(body, "expectedCost").as_deref(), Some("0"));
+        assert_eq!(
+            multipart_field(body, "paymentSourceType").as_deref(),
+            Some("1")
+        );
+        assert_eq!(multipart_field(body, "files").as_deref(), Some("badge-png"));
+        assert!(state.badges.contains_key(&9001));
+    }
+
+    // Past the free quota, a badge is refused in a real run and a dry run
+    // alike unless paid badges are allowed, and no create is sent.
+    #[tokio::test]
+    async fn create_badge_past_free_quota_is_refused_without_flag() {
+        let server = MockServer::start().await;
+        mount_empty_badge_list(&server).await;
+        let assets = assets_with(&["badge.png"]);
+        let budget = BadgeBudget {
+            free_left: Some(0),
+            allow_paid: false,
+        };
+
+        for dry_run in [false, true] {
+            let msg = sync_one_badge(&server, &assets, dry_run, budget)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(msg.contains("First Focus"), "msg: {}", msg);
+            assert!(msg.contains("100 Robux"), "msg: {}", msg);
+            assert!(msg.contains("--allow-paid-badges"), "msg: {}", msg);
+        }
+        assert!(
+            bodies(&server, "POST", "/legacy-badges/v1/universes/1/badges")
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn create_badge_past_free_quota_with_flag_expects_full_cost() {
+        let server = MockServer::start().await;
+        mount_empty_badge_list(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/legacy-badges/v1/universes/1/badges"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 9002})))
+            .mount(&server)
+            .await;
+
+        let assets = assets_with(&["badge.png"]);
+        let budget = BadgeBudget {
+            free_left: Some(0),
+            allow_paid: true,
+        };
+        sync_one_badge(&server, &assets, false, budget)
+            .await
+            .unwrap();
+
+        let creates = bodies(&server, "POST", "/legacy-badges/v1/universes/1/badges").await;
+        assert_eq!(
+            multipart_field(&creates[0], "expectedCost").as_deref(),
+            Some("100")
+        );
+    }
+
+    // Roblox's code 18 means the badge's real cost differs from expectedCost;
+    // it refuses before charging.
+    #[tokio::test]
+    async fn create_badge_cost_mismatch_says_nothing_was_charged() {
+        let server = MockServer::start().await;
+        mount_empty_badge_list(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/legacy-badges/v1/universes/1/badges"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "errors": [{
+                    "code": 18,
+                    "message": "Expected badge cost is different from the actual badge cost."
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let assets = assets_with(&["badge.png"]);
+        let budget = BadgeBudget {
+            free_left: Some(1),
+            allow_paid: false,
+        };
+        let msg = sync_one_badge(&server, &assets, false, budget)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("First Focus"), "msg: {}", msg);
+        assert!(msg.contains("nothing was charged"), "msg: {}", msg);
+    }
+
+    fn two_new_badges(assets: &tempfile::TempDir) -> RblxSyncConfig {
+        let mut config = base_config();
+        config.assets_dir = assets.path().to_string_lossy().to_string();
+        config.badge_payment_source = Some("user".to_string());
+        config.badges = vec![badge("Alpha", "badge.png"), badge("Beta", "badge.png")];
+        config
+    }
+
+    // Preflight reads the quota, and without --allow-paid-badges refuses the
+    // badges past it (in config order) before anything is changed.
+    #[tokio::test]
+    async fn preflight_refuses_badges_past_free_quota() {
+        let server = MockServer::start().await;
+        mount_empty_badge_list(&server).await;
+        mount_free_badges_quota(&server, 1).await;
+        let assets = assets_with(&["badge.png"]);
+        let config = two_new_badges(&assets);
+        let state = SyncState::default();
+
+        let msg = preflight(1, &config, &state, &client(&server), false, false)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("'Beta'"), "msg: {}", msg);
+        assert!(!msg.contains("'Alpha'"), "msg: {}", msg);
+        assert!(msg.contains("--allow-paid-badges"), "msg: {}", msg);
+
+        let budget = preflight(1, &config, &state, &client(&server), false, true)
+            .await
+            .unwrap();
+        assert_eq!(budget.free_left, Some(1));
+        assert!(budget.allow_paid);
+    }
+
+    // An unreadable quota blocks a real run that would create a badge, but a
+    // dry run carries on with the cost unknown.
+    #[tokio::test]
+    async fn preflight_unreadable_quota_blocks_only_real_runs() {
+        let server = MockServer::start().await;
+        mount_empty_badge_list(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/free-badges-quota"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let assets = assets_with(&["badge.png"]);
+        let config = two_new_badges(&assets);
+        let state = SyncState::default();
+
+        let msg = preflight(1, &config, &state, &client(&server), false, false)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("free badge quota"), "msg: {}", msg);
+
+        let budget = preflight(1, &config, &state, &client(&server), true, false)
+            .await
+            .unwrap();
+        assert_eq!(budget.free_left, None);
     }
 }

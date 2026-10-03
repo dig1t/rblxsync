@@ -207,10 +207,13 @@ impl RobloxClient {
         })
     }
 
+    /// Creates a game pass. `image_data` is sent as the `imageFile` part;
+    /// the create endpoint has no field that takes an existing asset id.
     pub async fn create_game_pass(
         &self,
         universe_id: u64,
         data: &serde_json::Value,
+        image_data: Option<(Vec<u8>, String)>,
     ) -> Result<serde_json::Value> {
         let url = format!(
             "{}/game-passes/v1/universes/{}/game-passes",
@@ -220,7 +223,7 @@ impl RobloxClient {
         let result: serde_json::Value = self
             .execute_factory(|| {
                 self.request(Method::POST, &url)
-                    .multipart(json_to_multipart(data))
+                    .multipart(multipart_with_image(data, image_data.as_ref()))
             })
             .await?;
         log::info!("Create game pass response: {}", result);
@@ -264,18 +267,8 @@ impl RobloxClient {
         );
 
         self.execute_factory(|| {
-            let mut form = json_to_multipart(data);
-            // The image bytes have to be cloned per attempt — reqwest's
-            // multipart bodies are stream-once and the retry layer builds
-            // a fresh request each iteration.
-            if let Some((file_bytes, filename)) = &image_data {
-                let file_part = reqwest::multipart::Part::bytes(file_bytes.clone())
-                    .file_name(filename.clone())
-                    .mime_str("image/png")
-                    .expect("image/png is a valid MIME type");
-                form = form.part("file", file_part);
-            }
-            self.request(Method::PATCH, &url).multipart(form)
+            self.request(Method::PATCH, &url)
+                .multipart(multipart_with_image(data, image_data.as_ref()))
         })
         .await
     }
@@ -337,10 +330,13 @@ impl RobloxClient {
         })
     }
 
+    /// Creates a developer product. `image_data` is sent as the `imageFile`
+    /// part; the create endpoint has no field that takes an existing asset id.
     pub async fn create_developer_product(
         &self,
         universe_id: u64,
         data: &serde_json::Value,
+        image_data: Option<(Vec<u8>, String)>,
     ) -> Result<serde_json::Value> {
         let url = format!(
             "{}/developer-products/v2/universes/{}/developer-products",
@@ -350,7 +346,7 @@ impl RobloxClient {
         let result: serde_json::Value = self
             .execute_factory(|| {
                 self.request(Method::POST, &url)
-                    .multipart(json_to_multipart(data))
+                    .multipart(multipart_with_image(data, image_data.as_ref()))
             })
             .await?;
         log::info!("Create developer product response: {}", result);
@@ -398,15 +394,8 @@ impl RobloxClient {
         );
 
         self.execute_factory(|| {
-            let mut form = json_to_multipart(data);
-            if let Some((file_bytes, filename)) = &image_data {
-                let file_part = reqwest::multipart::Part::bytes(file_bytes.clone())
-                    .file_name(filename.clone())
-                    .mime_str("image/png")
-                    .expect("image/png is a valid MIME type");
-                form = form.part("imageFile", file_part);
-            }
-            self.request(Method::PATCH, &url).multipart(form)
+            self.request(Method::PATCH, &url)
+                .multipart(multipart_with_image(data, image_data.as_ref()))
         })
         .await
     }
@@ -451,6 +440,25 @@ impl RobloxClient {
         })
     }
 
+    /// Free badges the universe can still create today (UTC), from
+    /// `GET badges.roblox.com/v1/universes/{universe_id}/free-badges-quota`.
+    /// The body is a bare integer and the endpoint needs no auth. Past the
+    /// quota, each new badge costs Robux.
+    pub async fn get_free_badges_quota(&self, universe_id: u64) -> Result<u64> {
+        let url = format!(
+            "{}/v1/universes/{}/free-badges-quota",
+            self.badges_base_url, universe_id
+        );
+        log::debug!("Reading free badge quota at: {}", url);
+        self.execute(self.request(Method::GET, &url))
+            .await
+            .context("Failed to read the free badge quota")
+    }
+
+    /// Creates a badge. `expected_cost` is the Robux the caller expects the
+    /// badge to cost: 0 inside the free daily quota. Roblox refuses the create
+    /// (403, code 18) without charging when the real cost differs, and answers
+    /// 500 when the field is missing.
     pub async fn create_badge(
         &self,
         universe_id: u64,
@@ -458,6 +466,7 @@ impl RobloxClient {
         description: &str,
         image_data: Option<(Vec<u8>, String)>,
         payment_source_type: Option<&str>,
+        expected_cost: u64,
     ) -> Result<serde_json::Value> {
         let url = format!(
             "{}/legacy-badges/v1/universes/{}/badges",
@@ -468,7 +477,8 @@ impl RobloxClient {
         self.execute_factory(|| {
             let mut form = reqwest::multipart::Form::new()
                 .text("name", name.to_string())
-                .text("description", description.to_string());
+                .text("description", description.to_string())
+                .text("expectedCost", expected_cost.to_string());
 
             // Payment source type (1 = User, 2 = Group)
             if let Some(source_type) = payment_source_type {
@@ -485,7 +495,7 @@ impl RobloxClient {
                     .file_name(filename.clone())
                     .mime_str("image/png")
                     .expect("image/png is a valid MIME type");
-                form = form.part("request.files", file_part);
+                form = form.part("files", file_part);
             }
 
             self.request(Method::POST, &url).multipart(form)
@@ -943,6 +953,40 @@ impl RobloxCookieClient {
     }
 }
 
+/// Multipart form for the game pass and developer product endpoints: each
+/// field of `data` as text, plus the icon as the `imageFile` part, the name
+/// both the create and update endpoints read.
+///
+/// Built per attempt from cloned bytes: reqwest multipart bodies can be sent
+/// once, and the 429 retry layer builds a fresh request every time.
+fn multipart_with_image(
+    data: &serde_json::Value,
+    image_data: Option<&(Vec<u8>, String)>,
+) -> reqwest::multipart::Form {
+    let form = json_to_multipart(data);
+    match image_data {
+        Some((file_bytes, filename)) => {
+            let file_part = reqwest::multipart::Part::bytes(file_bytes.clone())
+                .file_name(filename.clone())
+                .mime_str("image/png")
+                .expect("image/png is a valid MIME type");
+            form.part("imageFile", file_part)
+        }
+        None => form,
+    }
+}
+
+/// Text value of the multipart field `name` in a request body a test captured.
+#[cfg(test)]
+pub(crate) fn multipart_field(body: &[u8], name: &str) -> Option<String> {
+    let body = String::from_utf8_lossy(body);
+    let header = body.find(&format!("form-data; name=\"{}\"", name))?;
+    let rest = &body[header..];
+    let start = rest.find("\r\n\r\n")? + 4;
+    let len = rest[start..].find("\r\n")?;
+    Some(rest[start..start + len].to_string())
+}
+
 /// Converts a JSON object to multipart form data
 fn json_to_multipart(json: &serde_json::Value) -> reqwest::multipart::Form {
     let mut form = reqwest::multipart::Form::new();
@@ -1304,6 +1348,47 @@ mod tests {
 
         let result = client(&server).list_places(1).await.unwrap();
         assert_eq!(result, vec![42]);
+    }
+
+    #[tokio::test]
+    async fn get_free_badges_quota_reads_bare_integer() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/universes/1/free-badges-quota"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("3"))
+            .mount(&server)
+            .await;
+
+        let left = client(&server).get_free_badges_quota(1).await.unwrap();
+        assert_eq!(left, 3);
+    }
+
+    #[tokio::test]
+    async fn update_game_pass_with_icon_sends_image_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/game-passes/v1/universes/1/game-passes/2"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        client(&server)
+            .update_game_pass_with_icon(
+                1,
+                2,
+                &json!({"isForSale": true}),
+                Some((b"vip-png".to_vec(), "vip.png".to_string())),
+            )
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body = &requests[0].body;
+        assert_eq!(multipart_field(body, "isForSale").as_deref(), Some("true"));
+        assert_eq!(
+            multipart_field(body, "imageFile").as_deref(),
+            Some("vip-png")
+        );
     }
 
     #[tokio::test]

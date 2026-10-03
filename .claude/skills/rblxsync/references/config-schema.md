@@ -13,9 +13,9 @@ required.
 | `universe` | object | **Yes** | – | Target universe + settings. |
 | `game_passes` | list | No | `[]` | Game passes to sync. |
 | `developer_products` | list | No | `[]` | Developer products to sync. |
-| `badges` | list | No | `[]` | Badges to sync (100 Robux each to create). |
+| `badges` | list | No | `[]` | Badges to sync (5 free a day per game, then 100 Robux each to create). |
 | `places` | list | No | `[]` | Places available to `rblxsync publish`. |
-| `badge_payment_source` | string | No | – | `"user"` or `"group"`: who pays the 100 Robux badge fee. |
+| `badge_payment_source` | string | No | – | `"user"` or `"group"`. Needed to create badges: the wallet a badge past the free daily quota is paid from. |
 | `output_path` | string | No | – | Where `run` regenerates the typed `Config.luau` (e.g. `src/shared/Config.luau`). |
 
 ## `creator`
@@ -61,8 +61,8 @@ Negative values and values `> u32::MAX` are rejected at parse time.
 | `id` | number (u64) | No | – | Roblox resource id. Written automatically on create. When set, matching uses it instead of the name, so renaming is safe. |
 | `description` | string | No | – | |
 | `price` | number (u32) | No | `0` on create | Robux. |
-| `icon` | string | No | – | Filename relative to `assets_dir`. Re-uploaded only when its SHA-256 changes. |
-| `is_for_sale` | boolean | No | – | **Synced.** |
+| `icon` | string | No | – | Filename relative to `assets_dir`. Sent with the create; re-uploaded only when its SHA-256 changes. |
+| `is_for_sale` | boolean | No | – | **Synced.** Left out, a new pass with a `price` is created on sale. |
 
 ## `developer_products[]`
 
@@ -85,8 +85,12 @@ Negative values and values `> u32::MAX` are rejected at parse time.
 | `icon` | string | No | Filename relative to `assets_dir`. |
 | `is_enabled` | boolean | No | Mapped to the API `enabled` field on PATCH. |
 
-Creating a badge costs **100 Robux** and needs `badge_payment_source`
-(`"user"` or `"group"`). Confirm with the user before syncing new badges.
+Creating a badge needs `badge_payment_source` (`"user"` or `"group"`). Each
+game gets **5 free badges a day** (GMT); after that a badge costs **100 Robux**.
+`run` reads and prints the day's free quota first and stops before a paid badge
+unless given `--allow-paid-badges`. Each create sends the expected cost, so
+Roblox refuses rather than charge a different amount. Confirm with the user
+before syncing new badges, and before ever passing `--allow-paid-badges`.
 
 ## `places[]`
 

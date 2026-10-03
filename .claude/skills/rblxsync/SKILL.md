@@ -45,7 +45,8 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
   existing resource.
 - **An entry with no `id:` is the one to watch.** Renaming that one means no
   match by the new name, so rblxsync creates a second resource and leaves the
-  original selling. Duplicate badges also cost 100 Robux each.
+  original selling. A duplicate badge also uses up one of the day's 5 free
+  badges, or costs 100 Robux once they're gone.
   - Fix: give the entry its id rather than warning the user off the rename.
     Run `rblxsync import` (or `import --badge-id <id>` for a disabled badge) to
     pull the real id into the config, then rename freely.
@@ -63,12 +64,15 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
 3. **`--config` is a global flag and works on either side of the subcommand.**
    `rblxsync run --config prod.yml` and `rblxsync --config prod.yml run` are
    the same thing.
-4. **Creating a badge costs 100 Robux each.** Confirm with the user before a sync
-   that adds new badges.
+4. **Badges are free 5 a day per game (GMT), then 100 Robux each.** `run` reads
+   and prints the day's free quota before changing anything, and stops before a
+   badge past it unless given `--allow-paid-badges`. Never pass that flag
+   without the user's explicit go-ahead for the Robux, and confirm with the user
+   before a sync that adds new badges.
 5. **Before renaming a resource, check the entry has an `id:`.** With an id the
    rename is safe. Without one, matching falls back to the name and the rename
    creates a duplicate while the original keeps selling (and a duplicate badge
-   costs another 100 Robux). Add the id with `rblxsync import` first, then
+   burns a free slot or 100 Robux). Add the id with `rblxsync import` first, then
    rename. In a `--dry-run` diff, an unexpected "CREATE" for a resource that
    already exists is this mistake.
 6. **Confirm before destructive or paid actions**: new badges (Robux), publishing
@@ -136,7 +140,7 @@ For the full field-by-field schema, defaults, and every gotcha, read
 
 | Command | What it does |
 | --- | --- |
-| `rblxsync run [--dry-run]` | Sync universe settings + game passes, products, badges. Default command. Writes `rblxsync-lock.yml` and (if set) `Config.luau`. |
+| `rblxsync run [--dry-run] [--allow-paid-badges]` | Sync universe settings + game passes, products, badges. Default command. Writes `rblxsync-lock.yml` and (if set) `Config.luau`. `--allow-paid-badges` lets badges past the day's free quota cost 100 Robux each. |
 | `rblxsync publish` | Publish `.rbxl` places where `publish: true`. Always publishes (no "save"). Does NOT need the cookie. |
 | `rblxsync validate` | Parse + check the YAML (dup names, etc.). No API key, no network. |
 | `rblxsync import [--universe-id ID] [--place-id ID]... [--badge-id ID]...` | Pull a live experience into `rblxsync.yml` AND `rblxsync-lock.yml`, ids included. Use this to adopt rblxsync on an existing game. Remote wins on conflicts; the old config is backed up to `rblxsync.old.yml` first. Icons are not imported. |
@@ -164,7 +168,8 @@ safely.
 - **`genre`** and **`max_players`**: tracked in lock/`Config.luau` but **never
   pushed to Roblox** (`max_players` is a per-place setting).
 - **Developer Product `is_active`**: parsed but **not** synced; has no effect.
-- **Game Pass `is_for_sale`**: this one *is* synced.
+- **Game Pass `is_for_sale`**: this one *is* synced. Left out, a new pass with a
+  `price` is created on sale.
 
 Do not type game code against a Developer Product `IsActive` field. The generated
 `DeveloperProduct` type has no such field (`{ Id, Name, Description, Price }`).

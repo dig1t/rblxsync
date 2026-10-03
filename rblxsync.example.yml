@@ -40,7 +40,8 @@ places:
 
 assets_dir: assets/icons/ # where the icon files above live
 
-# Who pays the 100 Robux when a new badge is created: "user" or "group"
+# Who pays for a new badge once the game's 5 free a day are used: "user" or "group"
+# (paid badges also need `rblxsync run --allow-paid-badges`)
 badge_payment_source: "user"
 
 # rblxsync writes every ID into this file after each run, so your

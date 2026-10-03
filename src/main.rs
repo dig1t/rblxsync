@@ -26,6 +26,10 @@ enum Commands {
         /// Preview changes without applying them
         #[arg(long)]
         dry_run: bool,
+        /// Create badges past today's free quota at 100 Robux each. Without
+        /// it, a run that needs a paid badge stops before changing anything.
+        #[arg(long)]
+        allow_paid_badges: bool,
     },
     /// Publish place files
     Publish,
@@ -67,7 +71,10 @@ async fn main() -> anyhow::Result<()> {
     // but for now we'll load env for all.
     let env_config = Config::from_env();
 
-    let command = args.command.unwrap_or(Commands::Run { dry_run: false });
+    let command = args.command.unwrap_or(Commands::Run {
+        dry_run: false,
+        allow_paid_badges: false,
+    });
 
     if let Commands::Validate = command {
         let path = Path::new(&args.config);
@@ -105,7 +112,10 @@ async fn main() -> anyhow::Result<()> {
     let client = RobloxClient::new(env_config.api_key);
 
     match command {
-        Commands::Run { dry_run } => {
+        Commands::Run {
+            dry_run,
+            allow_paid_badges,
+        } => {
             if dry_run {
                 info!("Dry-run mode enabled.");
             }
@@ -145,7 +155,16 @@ async fn main() -> anyhow::Result<()> {
                 None
             };
 
-            commands::run(config, state, client, cookie_client, dry_run, config_path).await?;
+            commands::run(
+                config,
+                state,
+                client,
+                cookie_client,
+                dry_run,
+                allow_paid_badges,
+                config_path,
+            )
+            .await?;
         }
         Commands::Publish => {
             let config = RblxSyncConfig::load(Path::new(&args.config))?;

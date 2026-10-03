@@ -232,7 +232,7 @@ rblxsync --config production.yml run
 
 | Command | What it does |
 |---------|--------------|
-| `rblxsync run` | Makes Roblox match your config. Add `--dry-run` to preview. This is what runs if you type just `rblxsync`. |
+| `rblxsync run` | Makes Roblox match your config. Add `--dry-run` to preview. This is what runs if you type just `rblxsync`. Badges past the day's 5 free ones need `--allow-paid-badges`. |
 | `rblxsync publish` | Uploads your `.rbxl` place files and publishes them live. |
 | `rblxsync import` | Pulls what's already on Roblox down into your config. |
 | `rblxsync validate` | Checks your YAML for typos. Doesn't touch the internet. |
@@ -250,7 +250,7 @@ For each pass, product, or badge:
 
 That write-back happens the moment the resource is created, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate.
 
-Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed.
+Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A new pass or product gets its icon in the same call that creates it.
 
 ## `rblxsync-lock.yml`
 

@@ -40,16 +40,21 @@ rblxsync run --config production.yml    # identical
 
 If no subcommand is given, it defaults to `run` (not dry-run).
 
-### `run [--dry-run]`
+### `run [--dry-run] [--allow-paid-badges]`
 
 Syncs universe settings + game passes, developer products, badges. Idempotent:
 an entry with an `id:` is matched by that id; without one, by name
 (case-insensitive); no match creates the resource and writes the new `id:` back
 into `rblxsync.yml` immediately. Icons re-upload only when their local SHA-256
-differs from the lock file.
+differs from the lock file; a new pass or product is created with its icon, and
+a new pass with a `price` is created on sale unless `is_for_sale: false`.
 
 - `--dry-run`: previews changes, makes **no** mutating HTTP calls, does **not**
   write state, does **not** write `Config.luau`. Always run this first.
+- `--allow-paid-badges`: lets badges past the day's free quota (5 per game per
+  day, GMT) be created at 100 Robux each. Without it, `run` reads and prints the
+  quota and stops before changing anything if it would need a paid badge. Only
+  pass it with the user's explicit go-ahead.
 - Requires `ROBLOX_COOKIE` if any `universe.*` setting is present (see below).
 - On success writes `rblxsync-lock.yml`, and regenerates `Config.luau` if
   `output_path` is set.
@@ -140,7 +145,7 @@ against `develop.roblox.com`. The API key needs these scopes:
 | --- | --- | --- |
 | Game Passes | read + write | `game-passes/v1/universes/{uid}/game-passes` |
 | Developer Products | read + write | `developer-products/v2/universes/{uid}/developer-products` |
-| Badges | read + create/manage | list via `badges.roblox.com`; create/update/icon via legacy `legacy-badges` / `legacy-publish` |
+| Badges | read + create/manage | list and free quota via `badges.roblox.com`; create/update/icon via legacy `legacy-badges` / `legacy-publish` |
 | Assets (icons) | upload | `POST /assets/v1/assets` (multipart), polled at `GET /assets/v1/{operation}` |
 | Places | publish | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
 
