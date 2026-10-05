@@ -32,6 +32,7 @@ universe:
 game_passes:
   - name: "VIP Pass"                # match key (case-insensitive) until `id` is set; then just a label
     id: 111222333                   # written back automatically on the first run; with it set, renames are safe
+    ids: { dev: 444555666 }         # the same pass in environments.dev; written back by `run --env dev`
     description: "Exclusive access and perks"
     price: 100
     icon: "vip.png"                 # relative to assets_dir
@@ -54,6 +55,21 @@ places:
   - place_id: 1234567890
     file_path: "places/start_place.rbxl"
     publish: true                   # only published by `rblxsync publish` when true
+  - place_id: 1234567891
+    ids: { dev: 1234567892 }        # the same place in environments.dev (places can't be created; add by hand)
+    name: "Arena"                   # synced (API key); the ROOT place's name is the experience's: set it in universe: instead
+    server_size: 12                 # max players per server; synced
+
+# Other copies of the game (dev, staging). `rblxsync <cmd> --env dev` uses the
+# top level with this laid over it; null clears an inherited field. Entries are
+# shared: each keeps its id per copy under `ids:`. Lock file: rblxsync-lock.dev.yml.
+environments:
+  dev:
+    universe:
+      id: 987654321                 # REQUIRED, must differ from the top level
+      name: null                    # don't rename the dev copy (avoids the cookie too, with description: null)
+    output_path: "src/shared/ConfigDev.luau"  # omit to write the same file (sync-per-build setups)
+    name_prefix: "[dev] "           # prefixes the experience + place names in this copy, never item names
 
 # A missing or empty list leaves that set alone on Roblox.
 thumbnails:

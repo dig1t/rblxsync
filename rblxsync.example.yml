@@ -37,6 +37,21 @@ places:
   - place_id: 1234567890
     file_path: "places/start_place.rbxl"
     publish: true # only places set to true get published
+  - place_id: 1234567891
+    name: "Arena" # the root place's name is the game's, so set that one in universe: instead
+    server_size: 12 # most players in one server
+
+# A dev copy of the game: `rblxsync run --env dev` syncs the entries above to
+# it. Each entry keeps its id there under `ids: { dev: ... }`, which rblxsync
+# writes for you. Anything set here replaces the top-level value for dev only;
+# null leaves that field alone in the dev copy.
+environments:
+  dev:
+    universe:
+      id: 987654321 # required, and not the live game's
+      name: null # keep the dev copy's own name
+    output_path: "src/shared/ConfigDev.luau"
+    name_prefix: "[dev] " # "Arena" is "[dev] Arena" in the dev copy
 
 thumbnails:
   game_page: # the top of your game's page, up to 10, in this order

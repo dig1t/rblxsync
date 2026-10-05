@@ -1,6 +1,10 @@
 # Experience thumbnails
 
-Status: done, uncommitted (waiting on review and a live run with a valid API key)
+Status: done. Merged with the environments / place settings work:
+`ThumbnailPlan` carries the run's environment, so each environment's uploads
+go to its own `rblxsync-lock.<env>.yml`. An environment inherits the top-level
+`thumbnails` unless it overrides them (`thumbnails: null` skips them there).
+Checked with a `--env` dry run against a live public game.
 
 ## Goal
 

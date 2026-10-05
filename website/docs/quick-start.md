@@ -72,7 +72,7 @@ Don't retype everything. Pull it down instead:
 rblxsync import --universe-id 123456789
 ```
 
-This writes a `rblxsync.yml` from whatever is already on Roblox. Your old config gets saved as `rblxsync.old.yml` first, so nothing is lost.
+This writes a `rblxsync.yml` from whatever is already on Roblox. Your old config gets saved as `rblxsync.old.yml` first, so nothing is lost. Places come in with their names and server sizes.
 
 Two things it can't see on its own:
 
@@ -223,7 +223,7 @@ Every field it can contain is listed in the [API reference](/api#the-generated-l
 
 ## The commands
 
-Working on more than one game? Point `--config` at a different file. It works on either side of the command.
+Working on more than one game? Point `--config` at a different file. It works on either side of the command. A dev copy of the same game goes in the same file under [`environments:`](/api#environments), and every command takes `--env dev` to use it.
 
 ```bash
 rblxsync run --config production.yml
@@ -245,10 +245,12 @@ Every flag is listed in the [API reference](/api#cli-commands).
 For each pass, product, or badge:
 
 1. If the entry has an `id:`, it uses that. The name is then just a label, so you can rename it freely.
-2. If there's no `id:`, it looks for a match by name, ignoring capitals.
+2. If there's no `id:`, it looks for a match by name, ignoring capitals, and writes the match's `id:` into your `rblxsync.yml`.
 3. Still nothing? It creates one, then writes the new `id:` straight back into your `rblxsync.yml`.
 
-That write-back happens the moment the resource is created, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate.
+With `--env dev`, the ID it uses and writes is the entry's `ids: { dev: ... }`.
+
+That write-back happens the moment the resource is created or found, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate.
 
 Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A new pass or product gets its icon in the same call that creates it.
 
@@ -269,6 +271,6 @@ A new or changed image gets uploaded and the old upload deleted. The game page i
 
 ## `rblxsync-lock.yml`
 
-rblxsync writes this file to remember what it did: which IDs it made, which icons and thumbnails it already uploaded.
+rblxsync writes this file to remember what it did: which IDs it made, which icons and thumbnails it already uploaded. Each environment gets its own, like `rblxsync-lock.dev.yml`.
 
 **Commit it to git.** It's what keeps a run on your laptop and a run in CI from stepping on each other. Don't edit it by hand, it gets overwritten.

@@ -1,5 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_yaml::Value;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -128,6 +130,15 @@ pub struct RblxSyncConfig {
     pub assets_dir: String,
     pub creator: Option<CreatorConfig>,
     pub universe: UniverseConfig,
+    /// Other universes the same entries sync to (a dev or staging copy of the
+    /// game), by name. Each one overrides top-level keys for `--env <name>`;
+    /// see [`RblxSyncConfig::resolve`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environments: BTreeMap<String, Value>,
+    /// The environment this config was resolved for (`--env`), `None` for the
+    /// top level. Set by [`RblxSyncConfig::resolve`], never read from YAML.
+    #[serde(skip)]
+    pub env: Option<String>,
     #[serde(default)]
     pub game_passes: Vec<GamePassConfig>,
     #[serde(default)]
@@ -186,6 +197,9 @@ impl UniverseConfig {
 pub struct GamePassConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
+    /// This pass's id in each environment's universe (`id` is the top level's).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ids: BTreeMap<String, u64>,
     pub name: String,
     pub description: Option<String>,
     pub price: Option<u32>,
@@ -197,6 +211,8 @@ pub struct GamePassConfig {
 pub struct DeveloperProductConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ids: BTreeMap<String, u64>,
     pub name: String,
     pub description: Option<String>,
     pub price: u32,
@@ -208,18 +224,129 @@ pub struct DeveloperProductConfig {
 pub struct BadgeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ids: BTreeMap<String, u64>,
     pub name: String,
     pub description: Option<String>,
     pub icon: Option<String>,
     pub is_enabled: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct PlaceConfig {
-    pub place_id: u64,
+    /// The place in the top-level universe. Optional, so a place that so far
+    /// exists only in an environment can be listed by its `ids` alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_id: Option<u64>,
+    /// The same place in each environment's universe.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ids: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Most players in one server of this place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub file_path: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub publish: bool,
+}
+
+impl PlaceConfig {
+    /// How log lines name this place: its name, else its id.
+    pub fn label(&self) -> String {
+        match (&self.name, self.place_id) {
+            (Some(name), _) => format!("'{}'", name),
+            (None, Some(id)) => id.to_string(),
+            (None, None) => "<no id>".to_string(),
+        }
+    }
+
+    /// Whether `run` has any setting of this place to sync.
+    pub fn has_settings(&self) -> bool {
+        self.name.is_some() || self.description.is_some() || self.server_size.is_some()
+    }
+}
+
+/// Top-level keys an environment can't override: entries are shared by every
+/// environment, which keeps its own id for each one in the entry's `ids`.
+const SHARED_KEYS: [&str; 5] = [
+    "game_passes",
+    "developer_products",
+    "badges",
+    "places",
+    "environments",
+];
+
+/// Checks one `environments.<name>` overlay and returns its universe id. The
+/// overlay must name its own universe: one inherited from the top level would
+/// point a dev run at the live game.
+pub fn check_environment(name: &str, overlay: &Value, top_universe_id: u64) -> Result<u64> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        bail!(
+            "environments.{}: use only letters, digits, '-' and '_' in an environment's name (it names the lock file)",
+            name
+        );
+    }
+    let overlay = overlay.as_mapping().ok_or_else(|| {
+        anyhow!(
+            "environments.{}: expected the top-level keys this environment overrides, such as `universe: {{ id: ... }}`",
+            name
+        )
+    })?;
+    if let Some(key) = SHARED_KEYS
+        .iter()
+        .find(|key| overlay.contains_key(Value::from(**key)))
+    {
+        bail!(
+            "environments.{}.{}: entries are shared by every environment, so they can't be listed per environment. Give each top-level entry its id in this environment with `ids: {{ {}: <id> }}`",
+            name,
+            key,
+            name
+        );
+    }
+    let id = overlay
+        .get("universe")
+        .and_then(|universe| universe.get("id"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("environments.{}.universe.id is required", name))?;
+    if id == top_universe_id {
+        bail!(
+            "environments.{}.universe.id is {}, the top-level universe. Each environment needs its own universe",
+            name,
+            id
+        );
+    }
+    Ok(id)
+}
+
+/// Lays `overlay` over `base`: mappings merge key by key, `null` removes the
+/// key (so the field falls back to its default, whatever its type), and
+/// anything else replaces what was there.
+fn merge(base: &mut Value, overlay: &Value) {
+    match (base, overlay) {
+        (Value::Mapping(base), Value::Mapping(overlay)) => {
+            for (key, value) in overlay {
+                if value.is_null() {
+                    base.remove(key);
+                    continue;
+                }
+                match base.get_mut(key) {
+                    Some(existing) => merge(existing, value),
+                    None => {
+                        base.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay.clone(),
+    }
 }
 
 /// Experience thumbnails. An empty list leaves that set alone on Roblox.
@@ -255,6 +382,65 @@ impl RblxSyncConfig {
         let config: RblxSyncConfig =
             serde_yaml::from_str(&content).context("Failed to parse config file")?;
         Ok(config)
+    }
+
+    /// The config as environment `env` sees it: `environments.<env>` laid over
+    /// the top-level keys (an explicit `null` clears one), and each entry's
+    /// `ids.<env>` as its id. Entries with no id there are matched by name in
+    /// that universe, like entries without an `id` at the top level. The
+    /// environment's `name_prefix` goes in front of the experience's and each
+    /// place's name, so a dev copy reads "[dev] Lobby" in Studio. `None`
+    /// returns the top level unchanged.
+    pub fn resolve(self, env: Option<&str>) -> Result<Self> {
+        let Some(env) = env else {
+            return Ok(self);
+        };
+        let overlay = self.environments.get(env).ok_or_else(|| {
+            let known: Vec<&str> = self.environments.keys().map(String::as_str).collect();
+            anyhow!(
+                "No environment '{}' in the config (defined: {}). Leave out --env to sync the top-level universe {}",
+                env,
+                if known.is_empty() { "none".to_string() } else { known.join(", ") },
+                self.universe.id
+            )
+        })?;
+        check_environment(env, overlay, self.universe.id)?;
+        let mut overlay = overlay.clone();
+        let prefix = match overlay
+            .as_mapping_mut()
+            .and_then(|o| o.remove("name_prefix"))
+        {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(prefix)) => prefix,
+            Some(_) => bail!("environments.{}.name_prefix must be text", env),
+        };
+
+        let mut merged = serde_yaml::to_value(&self).context("Failed to read the config back")?;
+        merge(&mut merged, &overlay);
+        let mut resolved: RblxSyncConfig = serde_yaml::from_value(merged)
+            .with_context(|| format!("Failed to parse environments.{}", env))?;
+
+        let names = (resolved.universe.name.iter_mut())
+            .chain(resolved.places.iter_mut().filter_map(|p| p.name.as_mut()));
+        for name in names {
+            name.insert_str(0, &prefix);
+        }
+
+        let id_in = |ids: &BTreeMap<String, u64>| ids.get(env).copied();
+        for pass in &mut resolved.game_passes {
+            pass.id = id_in(&pass.ids);
+        }
+        for product in &mut resolved.developer_products {
+            product.id = id_in(&product.ids);
+        }
+        for badge in &mut resolved.badges {
+            badge.id = id_in(&badge.ids);
+        }
+        for place in &mut resolved.places {
+            place.place_id = id_in(&place.ids);
+        }
+        resolved.env = Some(env.to_string());
+        Ok(resolved)
     }
 }
 
@@ -431,5 +617,132 @@ mod tests {
         let yaml = "universe:\n  name: \"No Id\"\n";
         let result: std::result::Result<RblxSyncConfig, _> = serde_yaml::from_str(yaml);
         assert!(result.is_err());
+    }
+
+    // --- environments ---
+
+    fn env_config(environments: &str) -> RblxSyncConfig {
+        let yaml = format!(
+            "universe:\n  id: 1\n  name: Live Game\n  description: Live text\n  private_server_cost: 100\n\
+             output_path: Config.luau\n\
+             environments:\n{}\
+             game_passes:\n  - name: VIP\n    id: 10\n    ids: {{ dev: 20 }}\n    price: 100\n  - name: Fresh\n    id: 11\n\
+             developer_products:\n  - name: Coins\n    ids: {{ dev: 30 }}\n    price: 5\n\
+             badges:\n  - name: Win\n    id: 12\n    ids:\n      dev: 40\n\
+             places:\n  - place_id: 50\n    ids: {{ dev: 60 }}\n    name: Lobby\n  - ids: {{ dev: 61 }}\n    name: Dev only\n",
+            environments
+        );
+        serde_yaml::from_str(&yaml).unwrap()
+    }
+
+    const DEV: &str =
+        "  dev:\n    universe:\n      id: 2\n      name: null\n    output_path: ConfigDev.luau\n";
+
+    #[test]
+    fn test_resolve_without_env_is_the_top_level() {
+        let config = env_config(DEV).resolve(None).unwrap();
+        assert_eq!(config.env, None);
+        assert_eq!(config.universe.id, 1);
+        assert_eq!(config.game_passes[0].id, Some(10));
+        assert_eq!(config.places[1].place_id, None);
+    }
+
+    #[test]
+    fn test_resolve_env_overrides_keys_and_swaps_ids() {
+        let config = env_config(DEV).resolve(Some("dev")).unwrap();
+        assert_eq!(config.env.as_deref(), Some("dev"));
+        assert_eq!(config.universe.id, 2);
+        // `null` stops managing a field; keys the overlay leaves out carry over.
+        assert_eq!(config.universe.name, None);
+        assert_eq!(config.universe.description.as_deref(), Some("Live text"));
+        assert_eq!(
+            config.universe.private_server_cost,
+            Some(PrivateServerCost::Paid(100))
+        );
+        assert_eq!(config.output_path.as_deref(), Some("ConfigDev.luau"));
+
+        // Each entry's id becomes its dev id; with none it matches by name.
+        assert_eq!(config.game_passes[0].id, Some(20));
+        assert_eq!(config.game_passes[1].id, None);
+        assert_eq!(config.developer_products[0].id, Some(30));
+        assert_eq!(config.badges[0].id, Some(40));
+        assert_eq!(config.places[0].place_id, Some(60));
+        assert_eq!(config.places[1].place_id, Some(61));
+        // The shared fields don't change.
+        assert_eq!(config.game_passes[0].name, "VIP");
+        assert_eq!(config.game_passes[0].price, Some(100));
+    }
+
+    #[test]
+    fn test_resolve_null_falls_back_to_the_default() {
+        let mut config = env_config(
+            "  dev:\n    universe:\n      id: 2\n    assets_dir: null\n    thumbnails: null\n",
+        );
+        config.assets_dir = "icons".to_string();
+        config.thumbnails.game_page = vec![ThumbnailConfig {
+            image: "a.png".to_string(),
+            alt_text: None,
+        }];
+        let config = config.resolve(Some("dev")).unwrap();
+        assert_eq!(config.assets_dir, "assets");
+        assert!(config.thumbnails.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_name_prefix_marks_the_copy_but_not_items() {
+        let dev = "  dev:\n    universe:\n      id: 2\n    name_prefix: \"[dev] \"\n";
+        let config = env_config(dev).resolve(Some("dev")).unwrap();
+        assert_eq!(config.universe.name.as_deref(), Some("[dev] Live Game"));
+        assert_eq!(config.places[0].name.as_deref(), Some("[dev] Lobby"));
+        // Game code looks items up by name, so they keep theirs.
+        assert_eq!(config.game_passes[0].name, "VIP");
+
+        let bad = "  dev:\n    universe:\n      id: 2\n    name_prefix: 5\n";
+        let err = env_config(bad).resolve(Some("dev")).unwrap_err();
+        assert!(err.to_string().contains("name_prefix"), "{}", err);
+    }
+
+    #[test]
+    fn test_resolve_unknown_env_names_the_defined_ones() {
+        let err = env_config(DEV).resolve(Some("prod")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'prod'") && msg.contains("dev"), "{}", msg);
+    }
+
+    #[test]
+    fn test_resolve_refuses_unsafe_environments() {
+        for (overlay, expected) in [
+            (
+                "  dev:\n    output_path: x.luau\n",
+                "universe.id is required",
+            ),
+            ("  dev:\n    universe:\n      id: 1\n", "top-level universe"),
+            (
+                "  dev:\n    universe:\n      id: 2\n    game_passes: []\n",
+                "can't be listed per environment",
+            ),
+            ("  ../dev:\n    universe:\n      id: 2\n", "letters, digits"),
+            ("  dev: 2\n", "top-level keys"),
+        ] {
+            let config = env_config(overlay);
+            let env = config.environments.keys().next().unwrap().clone();
+            let err = config.resolve(Some(&env)).unwrap_err().to_string();
+            assert!(err.contains(expected), "{} -> {}", overlay, err);
+        }
+    }
+
+    #[test]
+    fn test_places_parse_settings_and_skip_empty_fields() {
+        let yaml =
+            "universe:\n  id: 1\nplaces:\n  - place_id: 5\n    name: Lobby\n    server_size: 30\n";
+        let config: RblxSyncConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.places[0].name.as_deref(), Some("Lobby"));
+        assert_eq!(config.places[0].server_size, Some(30));
+        assert!(!config.places[0].publish);
+
+        let written = serde_yaml::to_string(&config.places).unwrap();
+        assert!(!written.contains("file_path"), "{}", written);
+        assert!(!written.contains("publish"), "{}", written);
+        assert!(!written.contains("ids"), "{}", written);
     }
 }

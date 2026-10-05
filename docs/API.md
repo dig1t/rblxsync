@@ -9,16 +9,17 @@ Every command, flag, config field, and file format in one place. If you just wan
 ## CLI commands
 
 ```
-rblxsync [--config <PATH>] [COMMAND]
+rblxsync [--config <PATH>] [--env <NAME>] [COMMAND]
 ```
 
-### Global flag
+### Global flags
 
 | Flag | Alias | Default | What it does |
 | --- | --- | --- | --- |
 | `--config <PATH>` | `-c` | `rblxsync.yml` | Which config file to read. |
+| `--env <NAME>` | `-e` | | Which entry of [`environments`](#environments) to use, such as a dev copy of the game. Left out, rblxsync works on the top-level universe. |
 
-It's a global flag, so it works on either side of the subcommand. `rblxsync run --config x.yml` and `rblxsync --config x.yml run` do the same thing.
+Both are global flags, so they work on either side of the subcommand. `rblxsync run --config x.yml` and `rblxsync --config x.yml run` do the same thing.
 
 Type `rblxsync` with no subcommand and you get `run` without `--dry-run`.
 
@@ -38,10 +39,14 @@ Makes Roblox match your config. Safe to run as many times as you like.
 **How each resource is matched**
 
 1. The entry has an `id:` → that ID wins. The name is only a label, so renaming is safe and no duplicate is ever created.
-2. No `id:` → matched by name, ignoring capitals.
+2. No `id:` → matched by name, ignoring capitals, and the match's `id:` is written into your `rblxsync.yml`.
 3. No match at all → created, and the new `id:` is written straight back into your `rblxsync.yml`.
 
-That write-back is a surgical line insert. Your comments and formatting survive it, and it happens the instant the resource is created rather than at the end of the run. If a later step fails, the ID is already saved and the next run adopts it instead of making a second copy.
+With `--env <name>`, the ID in play is the entry's `ids.<name>` instead of `id`, and that's where the write-back goes.
+
+That write-back is a surgical line insert. Your comments and formatting survive it, and it happens the instant the resource is created or matched rather than at the end of the run. If a later step fails, the ID is already saved and the next run adopts it instead of making a second copy.
+
+**Places** can't be created through the API, so a place is only synced when it has an ID in the universe being synced (`place_id`, or `ids.<name>` with `--env`); otherwise it's skipped with a warning. A place's `name`, `description`, and `server_size` go out through Open Cloud. rblxsync reads the place first and sends only the fields that differ, because Roblox refuses any place update while the place is open in Team Create. The root place's name and description are the experience's: if the root place sets one that `universe:` sets too, the run stops before changing anything.
 
 **Icons** are only re-uploaded when the SHA-256 of the local file differs from the hash in the lock file. A new game pass or developer product is created with its icon in the same request.
 
@@ -52,11 +57,11 @@ That write-back is a surgical line insert. Your comments and formatting survive 
 **Other behavior**
 
 - A new game pass with a `price` is created on sale, unless its `is_for_sale` is `false`.
-- If any universe setting is present (`name`, `description`, `genre`, `playable_devices`, `max_players`, or `private_server_cost`), `run` requires `ROBLOX_COOKIE`. Without it, the command prints cookie setup instructions and exits `1`.
-- A successful run writes `rblxsync-lock.yml`.
+- If any universe setting is present (`name`, `description`, `genre`, `playable_devices`, `max_players`, or `private_server_cost`), `run` requires `ROBLOX_COOKIE`. Without it, the command prints cookie setup instructions and exits `1`. An environment inherits the top level's settings unless it sets them to `null`.
+- A successful run writes `rblxsync-lock.yml`, or `rblxsync-lock.<name>.yml` with `--env <name>`.
 - If `output_path` is set, the Luau module is regenerated after the sync.
 
-**Path warning:** the lock file is *loaded* from the config file's folder but *saved* to whatever folder you ran the command from. Those being different will desync your state. Run rblxsync from the folder holding `rblxsync-lock.yml`.
+**Paths:** `assets_dir`, `output_path`, and each place's `file_path` are relative to the folder you run rblxsync from. The lock file is always read from and written to the config file's folder.
 
 ### `publish`
 
@@ -66,7 +71,8 @@ rblxsync publish
 
 Uploads and publishes every place in the config with `publish: true`. Does not need `ROBLOX_COOKIE`.
 
-- A place with a missing `file_path` is logged as an error and skipped.
+- With `--env <name>`, each place goes to its `ids.<name>` place. A place without one is skipped with a warning.
+- A `file_path` that doesn't exist is logged as an error and skipped.
 - One place failing does not stop the others.
 
 Places are always published live. There's no "save without publishing" option.
@@ -87,6 +93,10 @@ Pulls an existing experience down into `rblxsync.yml` and `rblxsync-lock.yml`. U
 
 **Remote wins.** Where a value exists both locally and on Roblox, the Roblox value overwrites yours. Entries that only exist locally are kept. Lock file entries for resources that no longer exist are dropped.
 
+**Places** come in with their `name`, `description` (when it isn't empty), and `server_size`. The root place gets only `server_size`: its name and description are the experience's, which go into `universe:`. A place already in your config keeps its `file_path`, `publish`, and `ids`.
+
+**Environments** are kept as they are, and so is each entry's `ids`. `import` reads the top-level universe only, and refuses `--env`: an environment's names and prices would overwrite the entries every environment shares. To link a dev copy that already has the same items, run `rblxsync run --env dev`. It matches them by name, updates them to match the config, and writes each ID into `ids:`.
+
 Before writing, your existing `rblxsync.yml` is renamed to `rblxsync.old.yml`, then `rblxsync.old1.yml`, `.old2.yml` and so on if that name is taken. Nothing is overwritten without a backup.
 
 Icons and thumbnails are not imported. A `thumbnails` section and its lock entries carry over unchanged.
@@ -102,9 +112,12 @@ Checks the config without contacting Roblox. It does **not** need `ROBLOX_API_KE
 1. The config file exists.
 2. It parses as valid YAML in the expected shape.
 3. No two game passes, developer products, or badges share a name (ignoring capitals).
-4. `thumbnails.game_page` has at most 10 images and `thumbnails.home_page` at most 5, and `alt_text` only appears on the game page.
+4. Every environment sets its own `universe.id`, different from the top level's and every other environment's, and lists no entries of its own.
+5. Every key in an entry's `ids` is an environment.
+6. Every place has a `place_id` or `ids`, and a place with `publish: true` has a `file_path`.
+7. `thumbnails.game_page` has at most 10 images and `thumbnails.home_page` at most 5, and `alt_text` only appears on the game page.
 
-Exits `1` on failure, logs `Config file is valid.` on success.
+With `--env <name>`, it also checks that the environment exists and resolves. Exits `1` on failure, logs `Config file is valid.` on success.
 
 ### `export`
 
@@ -153,8 +166,9 @@ The config is `rblxsync.yml` unless `--config` says otherwise.
 | `game_passes` | list | No | `[]` | Game passes to sync. |
 | `developer_products` | list | No | `[]` | Developer products to sync. |
 | `badges` | list | No | `[]` | Badges to sync. |
-| `places` | list | No | `[]` | Places available to `publish`. |
+| `places` | list | No | `[]` | Places to configure and to `publish`. |
 | `thumbnails` | object | No | | Game page and home page thumbnails. |
+| `environments` | map | No | | Other universes the same entries sync to, by name. See [`environments`](#environments). |
 | `badge_payment_source` | string | No | | `"user"` or `"group"`. Needed to create badges. The wallet a badge past the free daily quota is paid from. |
 | `output_path` | string | No | | Where `run` writes the typed Luau module, e.g. `src/shared/Config.luau`. |
 
@@ -189,11 +203,39 @@ Setting any field here other than `id` makes `run` demand `ROBLOX_COOKIE`, inclu
 
 Negative numbers and anything above `u32::MAX` are rejected when the file is parsed.
 
+### `environments`
+
+A map from a name you pick (`dev`, `staging`) to the top-level keys that differ for that copy of the game. `--env <name>` uses the top level with that environment laid over it: a mapping merges key by key, anything else replaces the top-level value, and `null` puts a key back to its default. For a setting like `universe.name` or `thumbnails`, that means rblxsync leaves it alone in that environment.
+
+```yaml
+universe:
+  id: 123456789
+  name: "My Game"
+
+environments:
+  dev:
+    universe:
+      id: 987654321    # required
+      name: null       # don't rename the dev copy
+    output_path: src/shared/ConfigDev.luau
+```
+
+| Rule | Why |
+| --- | --- |
+| `universe.id` is required, and differs from the top level's and every other environment's | One inherited from the top level would send a dev run to the live game. |
+| No `game_passes`, `developer_products`, `badges`, `places`, or `environments` | Entries are shared by every environment. Each keeps its ID for an environment in its own `ids`. |
+| The name is letters, digits, `-`, and `_` | It names the lock file, `rblxsync-lock.<name>.yml`. |
+
+One key exists only here: `name_prefix`. It goes in front of the experience's name and every place's name in that environment, so `name_prefix: "[dev] "` turns a place named `Lobby` into `[dev] Lobby` in the dev copy. Pass, product, and badge names stay as they are, because game code looks them up by name.
+
+Universe settings carry over like any other key. If the top level sets `universe.name`, a dev run renames the dev copy to match (and needs `ROBLOX_COOKIE`) unless the environment sets its own `name` or `null`.
+
 ### `game_passes[]`
 
 | Field | Type | Required | What it is |
 | --- | --- | --- | --- |
 | `id` | number | No | Roblox game pass ID. Set it and matching uses it instead of the name. Usually written for you on create. |
+| `ids` | map of name to number | No | The pass's ID in each environment, like `{ dev: 2222222 }`. `--env` uses it in place of `id`, and writes it for you the same way. |
 | `name` | string | **Yes** | Unique, ignoring capitals. Used as the match key when there's no `id`. |
 | `description` | string | No | Shown on the pass. |
 | `price` | number | No | Robux. Defaults to `0` when created. |
@@ -205,6 +247,7 @@ Negative numbers and anything above `u32::MAX` are rejected when the file is par
 | Field | Type | Required | What it is |
 | --- | --- | --- | --- |
 | `id` | number | No | Roblox product ID. Same matching rule as game passes. |
+| `ids` | map of name to number | No | The product's ID in each environment. Same as game passes. |
 | `name` | string | **Yes** | Unique, ignoring capitals. |
 | `description` | string | No | Shown on the product. |
 | `price` | number | **Yes** | Robux. Required here, unlike game passes. |
@@ -216,6 +259,7 @@ Negative numbers and anything above `u32::MAX` are rejected when the file is par
 | Field | Type | Required | What it is |
 | --- | --- | --- | --- |
 | `id` | number | No | Roblox badge ID. Same matching rule as game passes. |
+| `ids` | map of name to number | No | The badge's ID in each environment. Same as game passes. |
 | `name` | string | **Yes** | Unique, ignoring capitals. |
 | `description` | string | No | Shown on the badge. |
 | `icon` | string | No | Filename inside `assets_dir`. |
@@ -229,9 +273,15 @@ Roblox cannot list disabled badges. If a disabled badge already exists and your 
 
 | Field | Type | Required | Default | What it is |
 | --- | --- | --- | --- | --- |
-| `place_id` | number | **Yes** | | Which place to publish to. A different number from `universe.id`, and you can find it in Studio with `print(game.PlaceId)`. |
-| `file_path` | string | **Yes** | | Path to a `.rbxl` or `.rbxlx` file. |
+| `place_id` | number | No | | The place in the top-level universe. A different number from `universe.id`, and you can find it in Studio with `print(game.PlaceId)`. A place needs this or `ids`. |
+| `ids` | map of name to number | No | | The same place's ID in each environment. |
+| `name` | string | No | | The place's name. |
+| `description` | string | No | | The place's description. |
+| `server_size` | number | No | | The most players one server of this place holds. |
+| `file_path` | string | No | | Path to a `.rbxl` or `.rbxlx` file. Needed with `publish: true`. |
 | `publish` | boolean | No | `false` | Only `true` places are touched by `rblxsync publish`. |
+
+`run` syncs `name`, `description`, and `server_size`, and leaves out the ones you don't set. The root place's name and description are the experience's own, so set those in one spot only: under `universe:` (needs `ROBLOX_COOKIE`) or on the root place here (the API key is enough). A run stops if both set the same one.
 
 ### `thumbnails`
 
@@ -254,6 +304,7 @@ How a run treats them:
 - Thumbnails rblxsync didn't upload are never deleted. On the game page they stay after yours, count toward the 10, and the run lists them in a warning.
 - `home_page` updates the personalization Roblox is running, which keeps its statistics, or starts one if none is running. Home page thumbnails it stops serving are only deleted if rblxsync uploaded them.
 - A missing or empty list leaves that set alone. Removing the whole list deletes nothing.
+- An [environment](#environments) gets the same images in its own universe, tracked in its own lock file. Give it its own `thumbnails`, or `thumbnails: null` to leave its thumbnails alone.
 - Roblox moderates every image. A rejected image, or a home page one flagged as spam, gets a warning on each run until you replace the file.
 
 Roblox recommends 16:9 images, ideally 1920×1080, and home page images under 3 MB.
@@ -278,8 +329,17 @@ universe:
   max_players: 50
   private_server_cost: "disabled"
 
+environments:
+  dev:
+    universe:
+      id: 987654321
+      name: "[dev] My Awesome Game"
+    output_path: "src/shared/ConfigDev.luau"
+
 game_passes:
   - name: "VIP Pass"
+    id: 1111111
+    ids: { dev: 2222222 }
     description: "Fly, glow, and skip the queue"
     price: 100
     icon: "vip_pass.png"
@@ -299,8 +359,13 @@ badges:
 
 places:
   - place_id: 1234567890
+    ids: { dev: 1234567891 }
     file_path: "places/start_place.rbxl"
     publish: true
+  - place_id: 1234567892
+    ids: { dev: 1234567893 }
+    name: "Arena"
+    server_size: 12
 
 thumbnails:
   game_page:
@@ -355,6 +420,8 @@ jobs:
 
 Anything `run` writes back into `rblxsync.yml` or `rblxsync-lock.yml` on the runner is thrown away when the job finishes. Create new resources locally and commit the IDs, then let CI do the updates. Do the same with new or changed thumbnails: thumbnails have no name to match by, so a CI run that can't see them in the lock file uploads them again.
 
+For an environment, pass it in `args`, for example `args: "--env dev"` in a job that runs on your dev branch.
+
 ---
 
 ## Environment variables
@@ -372,6 +439,8 @@ Both secrets are read from `.env` through `dotenvy`. Keep `.env` in `.gitignore`
 ## `rblxsync-lock.yml`
 
 Generated state. **Don't hand-edit it**, your changes get overwritten. Commit it so every machine and your CI agree on what already exists. A missing file is treated as empty.
+
+It sits next to the config file. Each environment has its own, `rblxsync-lock.<name>.yml`, in the same format.
 
 | Key | Type | What it holds |
 | --- | --- | --- |
@@ -542,7 +611,7 @@ The API key needs these scopes:
 | Developer products | read + write | `GET`/`POST`/`PATCH .../developer-products/v2/universes/{uid}/developer-products` |
 | Badges | read + create/manage | List via `badges.roblox.com/v1/universes/{uid}/badges` and the free quota via `.../free-badges-quota` (no auth); create, update, and icon through the legacy `legacy-badges` / `legacy-publish` endpoints |
 | Assets (icons) | upload | `POST /assets/v1/assets` (multipart), then polled at `GET /assets/v1/{operation}` |
-| Places | publish | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
+| Places | read + write (`universe.place:write`) | Settings: `GET` then `PATCH /cloud/v2/universes/{uid}/places/{placeId}?updateMask=...`. Publish: `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
 | Game page thumbnails | `legacy-universe:manage` | Upload, alt text, order, and delete through `legacy-game-internationalization/v1/game-thumbnails/games/{uid}/language-codes/{lang}/...`, where `{lang}` is the experience's source language. Read through `gameinternationalization.roblox.com/v1/source-language/games/{uid}` and `.../v1/game-thumbnails/games/{uid}/images` (no auth) |
 | Home page thumbnails | `universe.thumbnail:read` + `universe.thumbnail:write` | `thumbnail-personalization-api/v1/universes/{uid}/thumbnails` to list, upload (then polled at `.../thumbnails/uploads/status`), and delete; `.../personalization` to read, create, and update. Roblox marks this API experimental |
 

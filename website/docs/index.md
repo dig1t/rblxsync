@@ -38,7 +38,8 @@ Run it again tomorrow and nothing breaks. It never makes a second copy of the sa
 - Create and update game passes, developer products, and badges from one file
 - Upload icons, and skip the upload when the image hasn't changed
 - Keep your game page and home page thumbnails in order, with alt text, swapping only the images that changed
-- Publish `.rbxl` place files
+- Name your places, set their server size, and publish `.rbxl` place files
+- Keep a dev copy of the game in the same file, each entry with its own ID per copy
 - Write every ID into a typed Luau module your game code can `require`
 - Pull an existing game's setup down into a config, so you don't have to retype it
 - Run the whole thing from GitHub Actions

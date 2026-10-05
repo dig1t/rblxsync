@@ -3,8 +3,9 @@
 //! serde_yaml cannot preserve comments or formatting, so when `run` creates a
 //! new resource it can't round-trip the whole file without destroying the
 //! user's hand-authored layout. Instead we do a minimal text insert: find the
-//! one list item we just created and splice a single `id:` line into it,
-//! leaving every other byte of the file untouched.
+//! one list item we just created and splice a single `id:` line (or one
+//! environment's entry in its `ids` map) into it, leaving every other byte of
+//! the file untouched.
 
 /// Insert `id: <id>` into the list item under top-level `section` whose `name`
 /// equals `name`, if that item does not already have an `id`. Returns the new
@@ -17,7 +18,82 @@
 /// returns None. That is the acceptable ceiling for this surgical editor.
 pub fn insert_id(yaml: &str, section: &str, name: &str, id: u64) -> Option<String> {
     let lines: Vec<&str> = yaml.lines().collect();
+    let (start, end, key_indent) = find_item(&lines, section, name)?;
+    // Already has an id? Return unchanged rather than duplicating the key.
+    // (Documented choice: never write a second `id:` into an item that
+    // already has one.)
+    if item_has_key(&lines, start, end, key_indent, "id") {
+        return Some(yaml.to_string());
+    }
+    let mut out = owned(&lines);
+    out.insert(start + 1, format!("{}id: {}", " ".repeat(key_indent), id));
+    Some(rejoin(yaml, out))
+}
 
+/// Insert `<env>: <id>` into the `ids` map of the list item under `section`
+/// whose `name` equals `name`, unless that environment already has an id
+/// there. A missing map is added as `ids: { <env>: <id> }` under the item's
+/// `id:` line (or its first line). Returns None when the item can't be found
+/// or its `ids` value is in a shape this editor doesn't touch.
+pub fn insert_env_id(yaml: &str, section: &str, name: &str, env: &str, id: u64) -> Option<String> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let (start, end, key_indent) = find_item(&lines, section, name)?;
+    let mut out = owned(&lines);
+
+    let Some(ids_line) = key_line(&lines, start, end, key_indent, "ids") else {
+        let after = key_line(&lines, start, end, key_indent, "id").unwrap_or(start);
+        let line = format!("{}ids: {{ {}: {} }}", " ".repeat(key_indent), env, id);
+        out.insert(after + 1, line);
+        return Some(rejoin(yaml, out));
+    };
+
+    let line = lines[ids_line];
+    let value_at = line.find("ids:")? + "ids:".len();
+    let (value, comment) = split_comment(&line[value_at..]);
+    let value = value.trim();
+
+    if value.is_empty() {
+        // Block map: its entries are the following lines indented deeper.
+        let entries: Vec<&str> = lines[ids_line + 1..end]
+            .iter()
+            .take_while(|l| l.trim().is_empty() || indent_of(l) > key_indent)
+            .copied()
+            .collect();
+        if entries.iter().any(|l| parse_key_value(l, env).is_some()) {
+            return Some(yaml.to_string());
+        }
+        let child_indent = entries
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| indent_of(l))
+            .unwrap_or(key_indent + 2);
+        out.insert(
+            ids_line + 1,
+            format!("{}{}: {}", " ".repeat(child_indent), env, id),
+        );
+        return Some(rejoin(yaml, out));
+    }
+
+    // Flow map on one line: `ids: { dev: 1 }`.
+    let inner = value.strip_prefix('{')?.strip_suffix('}')?.trim();
+    if inner
+        .split(',')
+        .any(|pair| parse_key_value(pair, env).is_some())
+    {
+        return Some(yaml.to_string());
+    }
+    let pairs = if inner.is_empty() {
+        format!("{}: {}", env, id)
+    } else {
+        format!("{}, {}: {}", inner, env, id)
+    };
+    out[ids_line] = format!("{} {{ {} }}{}", &line[..value_at], pairs, comment);
+    Some(rejoin(yaml, out))
+}
+
+/// Locate the list item under top-level `section` whose `name:` equals `name`.
+/// Returns `(first line, end line exclusive, indent of its keys)`.
+fn find_item(lines: &[&str], section: &str, name: &str) -> Option<(usize, usize, usize)> {
     // 1. Locate the top-level section key (e.g. `game_passes:` at column 0).
     let section_start = lines
         .iter()
@@ -57,14 +133,8 @@ pub fn insert_id(yaml: &str, section: &str, name: &str, id: u64) -> Option<Strin
 
             // Match on this item's `name:` value, whether it's inline on the
             // `- ` line or on a sibling key line.
-            if item_name(&lines, idx, item_end, key_indent).as_deref() == Some(name) {
-                // Already has an id? Return unchanged rather than duplicating
-                // the key. (Documented choice: never write a second `id:` into
-                // an item that already has one.)
-                if item_has_key(&lines, idx, item_end, key_indent, "id") {
-                    return Some(yaml.to_string());
-                }
-                return Some(splice_id_line(yaml, &lines, idx, key_indent, id));
+            if item_name(lines, idx, item_end, key_indent).as_deref() == Some(name) {
+                return Some((idx, item_end, key_indent));
             }
 
             idx = item_end;
@@ -148,24 +218,60 @@ fn item_has_key(
     key_indent: usize,
     key: &str,
 ) -> bool {
+    key_line(lines, item_start, item_end, key_indent, key).is_some()
+}
+
+/// The line holding the item's `key:`, inline on its `- ` line or on a sibling
+/// key line at `key_indent`.
+fn key_line(
+    lines: &[&str],
+    item_start: usize,
+    item_end: usize,
+    key_indent: usize,
+    key: &str,
+) -> Option<usize> {
     // Inline keys on the `- ` line (e.g. `- id: 5` or `- name: X` style).
     if let Some((_, after)) = split_list_item(lines[item_start]) {
         if parse_key_value(after, key).is_some() {
-            return true;
+            return Some(item_start);
         }
     }
     // Sibling key lines.
-    for line in &lines[item_start + 1..item_end] {
-        let indent = line.len() - line.trim_start().len();
-        if indent == key_indent {
-            if let Some(stripped) = line.trim_start().strip_prefix(key) {
-                if stripped.starts_with(':') {
-                    return true;
-                }
-            }
-        }
+    (item_start + 1..item_end).find(|&i| {
+        let line = lines[i];
+        indent_of(line) == key_indent
+            && line
+                .trim_start()
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.starts_with(':'))
+    })
+}
+
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// Split a value from its trailing ` # comment`, keeping the comment's
+/// leading whitespace with it.
+fn split_comment(value: &str) -> (&str, &str) {
+    match value.find(" #") {
+        Some(at) => value.split_at(at),
+        None => (value, ""),
     }
-    false
+}
+
+fn owned(lines: &[&str]) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
+
+/// Join edited lines back into a file, keeping the original trailing newline
+/// (which `str::lines` drops).
+fn rejoin(yaml: &str, lines: Vec<String>) -> String {
+    let mut result = lines.join("\n");
+    if yaml.ends_with('\n') {
+        result.push('\n');
+    }
+    result
 }
 
 /// Read the `name:` value of the item spanning `[item_start, item_end)`, whether
@@ -194,38 +300,95 @@ fn item_name(
     None
 }
 
-/// Build the new YAML by inserting `id: <id>` immediately after the item's first
-/// line (`item_start`), indented to `key_indent`. Preserves the original line
-/// terminator style and trailing-newline presence.
-fn splice_id_line(
-    yaml: &str,
-    lines: &[&str],
-    item_start: usize,
-    key_indent: usize,
-    id: u64,
-) -> String {
-    let indent = " ".repeat(key_indent);
-    let new_line = format!("{}id: {}", indent, id);
-
-    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
-    for (i, line) in lines.iter().enumerate() {
-        out.push((*line).to_string());
-        if i == item_start {
-            out.push(new_line.clone());
-        }
-    }
-
-    let mut result = out.join("\n");
-    // `str::lines` drops a trailing newline; restore it if the original had one.
-    if yaml.ends_with('\n') {
-        result.push('\n');
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_id_adds_ids_under_the_id_line() {
+        let yaml = "\
+badges:
+  - name: First Win
+    id: 7
+    icon: win.png
+  - name: Second
+";
+        assert_eq!(
+            insert_env_id(yaml, "badges", "First Win", "dev", 9).unwrap(),
+            "\
+badges:
+  - name: First Win
+    id: 7
+    ids: { dev: 9 }
+    icon: win.png
+  - name: Second
+"
+        );
+        // Without an `id:` line it goes right under the item's first line.
+        assert_eq!(
+            insert_env_id(yaml, "badges", "Second", "dev", 3).unwrap(),
+            "\
+badges:
+  - name: First Win
+    id: 7
+    icon: win.png
+  - name: Second
+    ids: { dev: 3 }
+"
+        );
+    }
+
+    #[test]
+    fn env_id_extends_a_flow_map_and_keeps_its_comment() {
+        let yaml = "\
+places:
+  - name: Lobby
+    ids: { dev: 1 } # set by hand
+";
+        assert_eq!(
+            insert_env_id(yaml, "places", "Lobby", "staging", 2).unwrap(),
+            "\
+places:
+  - name: Lobby
+    ids: { dev: 1, staging: 2 } # set by hand
+"
+        );
+        assert_eq!(
+            insert_env_id(yaml, "places", "Lobby", "dev", 5).unwrap(),
+            yaml,
+            "an environment that has an id keeps it"
+        );
+    }
+
+    #[test]
+    fn env_id_extends_a_block_map() {
+        let yaml = "\
+game_passes:
+  - name: VIP
+    ids:
+        dev: 1
+    price: 100
+";
+        assert_eq!(
+            insert_env_id(yaml, "game_passes", "VIP", "staging", 2).unwrap(),
+            "\
+game_passes:
+  - name: VIP
+    ids:
+        staging: 2
+        dev: 1
+    price: 100
+"
+        );
+        assert_eq!(
+            insert_env_id(yaml, "game_passes", "VIP", "dev", 5).unwrap(),
+            yaml
+        );
+        assert_eq!(
+            insert_env_id(yaml, "game_passes", "Missing", "dev", 5),
+            None
+        );
+    }
 
     #[test]
     fn inserts_id_preserving_comments() {

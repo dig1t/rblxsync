@@ -60,12 +60,24 @@ personalization in place.
   quota and stops before changing anything if it would need a paid badge. Only
   pass it with the user's explicit go-ahead.
 - Requires `ROBLOX_COOKIE` if any `universe.*` setting is present (see below).
-- On success writes `rblxsync-lock.yml`, and regenerates `Config.luau` if
-  `output_path` is set.
+- Syncs place `name` / `description` / `server_size` (GET, then PATCH only the
+  changed fields; scope `universe.place:write`).
+- On success writes `rblxsync-lock.yml` (`rblxsync-lock.<env>.yml` with
+  `--env`), and regenerates `Config.luau` if `output_path` is set.
+- A name match also writes its `id:` (or `ids.<env>`) into `rblxsync.yml`.
 
-> **Path note:** the lock file is *loaded* from the config file's parent dir but
-> *saved* to the current working directory. Run rblxsync from the directory that
-> holds `rblxsync-lock.yml` so state stays consistent.
+> **Path note:** the lock file is read from and written to the config file's
+> folder. `assets_dir`, `output_path`, and place `file_path`s are relative to
+> the working directory, so run rblxsync from the project root.
+
+### `--env <name>` (global)
+
+Uses `environments.<name>` from the config: that universe, its overrides, each
+entry's `ids.<name>` as its id, and its own lock file. Works with `run`,
+`publish`, `export`, and `validate`. `import` refuses it, since an environment's
+values would overwrite the shared entries; to adopt a dev copy that already has
+the items, `run --env <name> --dry-run`, then `run --env <name>` (matches by
+name, PATCHes to the config, writes `ids.<name>`). Place ids go in by hand.
 
 ### `publish`
 
@@ -111,6 +123,9 @@ know about yet.
   disabled badge will create a duplicate.
 - Remote is authoritative on conflicts: remote values overwrite matching local
   ones, local-only entries are kept, stale lock entries are dropped.
+- Places get `name`, `description` (if not empty), and `server_size`; the root
+  place gets only `server_size` (its name/description go to `universe:`).
+  `environments` and each entry's `ids` are kept.
 - An existing `rblxsync.yml` is backed up to `rblxsync.old.yml` first (then
   `rblxsync.old1.yml`, `.old2.yml`, ...).
 - Icons and thumbnails are not imported. An existing `thumbnails` section and
@@ -152,7 +167,7 @@ against `develop.roblox.com`. The API key needs these scopes:
 | Developer Products | read + write | `developer-products/v2/universes/{uid}/developer-products` |
 | Badges | read + create/manage | list and free quota via `badges.roblox.com`; create/update/icon via legacy `legacy-badges` / `legacy-publish` |
 | Assets (icons) | upload | `POST /assets/v1/assets` (multipart), polled at `GET /assets/v1/{operation}` |
-| Places | publish | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
+| Places | read + write (`universe.place:write`) | Settings: `GET`/`PATCH /cloud/v2/universes/{uid}/places/{placeId}?updateMask=...`; publish: `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
 | Game page thumbnails | `legacy-universe:manage` | `legacy-game-internationalization/v1/game-thumbnails/games/{uid}/language-codes/{lang}/...` (upload, alt text, order, delete); listed via `gameinternationalization.roblox.com` (no auth) |
 | Home page thumbnails | `universe.thumbnail:read` + `universe.thumbnail:write` | `thumbnail-personalization-api/v1/universes/{uid}/thumbnails` and `.../personalization` (experimental) |
 

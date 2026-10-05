@@ -82,8 +82,10 @@ pub struct ResourceState {
 }
 
 impl SyncState {
-    pub fn load(project_root: &Path) -> Result<Self> {
-        let state_path = Self::get_state_path(project_root);
+    /// Loads the lock file for `env` (`None` for the top level) from
+    /// `project_root`, or an empty state when there is none yet.
+    pub fn load(project_root: &Path, env: Option<&str>) -> Result<Self> {
+        let state_path = Self::get_state_path(project_root, env);
         if !state_path.exists() {
             return Ok(Self::default());
         }
@@ -93,8 +95,8 @@ impl SyncState {
         Ok(state)
     }
 
-    pub fn save(&self, project_root: &Path) -> Result<()> {
-        let state_path = Self::get_state_path(project_root);
+    pub fn save(&self, project_root: &Path, env: Option<&str>) -> Result<()> {
+        let state_path = Self::get_state_path(project_root, env);
         if let Some(parent) = state_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -104,8 +106,13 @@ impl SyncState {
         Ok(())
     }
 
-    fn get_state_path(project_root: &Path) -> PathBuf {
-        project_root.join("rblxsync-lock.yml")
+    /// `rblxsync-lock.yml`, or `rblxsync-lock.<env>.yml` for an environment:
+    /// each universe has its own ids and icon hashes.
+    fn get_state_path(project_root: &Path, env: Option<&str>) -> PathBuf {
+        match env {
+            Some(env) => project_root.join(format!("rblxsync-lock.{}.yml", env)),
+            None => project_root.join("rblxsync-lock.yml"),
+        }
     }
 
     /// Find a game pass by name (case-insensitive) and return (id, state)
@@ -231,7 +238,7 @@ mod tests {
     #[test]
     fn test_load_returns_default_when_missing() {
         let dir = tempdir().unwrap();
-        let state = SyncState::load(dir.path()).unwrap();
+        let state = SyncState::load(dir.path(), None).unwrap();
         assert!(state.universe.is_none());
         assert!(state.game_passes.is_empty());
         assert!(state.developer_products.is_empty());
@@ -262,15 +269,29 @@ mod tests {
         state.update_developer_product(2, "Boost".to_string(), None, Some(50), None, None);
         state.update_badge(3, "Win".to_string(), None, Some(true), None, None);
 
-        state.save(dir.path()).unwrap();
+        state.save(dir.path(), None).unwrap();
         assert!(dir.path().join("rblxsync-lock.yml").exists());
 
-        let loaded = SyncState::load(dir.path()).unwrap();
+        let loaded = SyncState::load(dir.path(), None).unwrap();
         assert_eq!(loaded.universe, state.universe);
         assert_eq!(loaded.game_passes.get(&1).unwrap().name, "VIP");
         assert_eq!(loaded.game_passes.get(&1).unwrap().price, Some(100));
         assert_eq!(loaded.developer_products.get(&2).unwrap().name, "Boost");
         assert_eq!(loaded.badges.get(&3).unwrap().is_enabled, Some(true));
+    }
+
+    #[test]
+    fn test_environment_has_its_own_lock_file() {
+        let dir = tempdir().unwrap();
+        let mut dev = SyncState::default();
+        dev.update_badge(3, "Win".to_string(), None, None, None, None);
+        dev.save(dir.path(), Some("dev")).unwrap();
+
+        assert!(dir.path().join("rblxsync-lock.dev.yml").exists());
+        assert!(!dir.path().join("rblxsync-lock.yml").exists());
+        assert!(SyncState::load(dir.path(), None).unwrap().badges.is_empty());
+        let loaded = SyncState::load(dir.path(), Some("dev")).unwrap();
+        assert_eq!(loaded.badges.get(&3).unwrap().name, "Win");
     }
 
     #[test]

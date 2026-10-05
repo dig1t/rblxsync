@@ -773,6 +773,30 @@ impl RobloxClient {
         self.execute(self.request(Method::GET, &url)).await
     }
 
+    /// Change a place's settings via Open Cloud (`cloud/v2`, scope
+    /// `universe.place:write`). `fields` holds only the `Place` fields to
+    /// change (`displayName`, `description`, `serverSize`); their names are
+    /// the update mask, so nothing else is touched. Roblox answers 409 while
+    /// the place is open in a Team Create session.
+    pub async fn update_place(
+        &self,
+        universe_id: u64,
+        place_id: u64,
+        fields: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let url = format!(
+            "{}/cloud/v2/universes/{}/places/{}",
+            self.base_url, universe_id, place_id
+        );
+        let mask = fields.keys().cloned().collect::<Vec<_>>().join(",");
+        self.execute(
+            self.request(Method::PATCH, &url)
+                .query(&[("updateMask", mask)])
+                .json(fields),
+        )
+        .await
+    }
+
     /// Fetch a single badge by id (`badges.roblox.com/v1/badges/{id}`). Unlike
     /// the universe badge LIST, this returns DISABLED badges too — the list
     /// endpoint silently omits them. `import --badge-id` uses this to adopt a

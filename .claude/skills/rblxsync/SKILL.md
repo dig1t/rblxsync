@@ -37,7 +37,8 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
 - **Matching is id-first.** Each `game_passes[]`, `developer_products[]`, and
   `badges[]` entry takes an optional `id:`. Resolution order on `run`:
   1. Entry has `id:` -> matched by that id. The `name` is only a label.
-  2. No `id:` -> matched by name, case-insensitive.
+  2. No `id:` -> matched by name, case-insensitive, and the match's `id:` is
+     written back into the user's `rblxsync.yml`.
   3. No match -> created, and the new `id:` is written back into the user's
      `rblxsync.yml` right away (a line insert that keeps their comments and
      formatting), so a later failure can't lose it and the next run adopts the
@@ -56,6 +57,17 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
     workaround and it is no longer the answer.
   - `--dry-run` still proves it: an unexpected "CREATE" for something that
     already exists means the entry is missing its id.
+- **Environments = other copies of the same game** (a dev universe) in the same
+  file. `environments.<name>` overrides top-level keys (it must set its own
+  `universe.id`; `null` clears an inherited field), and every entry keeps its id
+  in that copy under `ids: { <name>: <id> }`. `--env <name>` on any command
+  syncs that copy, with its own lock file `rblxsync-lock.<name>.yml`. Never
+  suggest a second config file per universe; that is what this replaces.
+- **Places** take `name`, `description`, and `server_size`, synced on `run`
+  through Open Cloud (only changed fields; Roblox refuses while the place is
+  open in Team Create). Places can't be created: each needs `place_id` (or
+  `ids.<name>`). The root place's name/description are the experience's, so set
+  them in `universe:` or on the root place, never both.
 
 ## Golden rules
 
@@ -63,9 +75,9 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
    `rblxsync run --dry-run` and show the user the diff before `rblxsync run`.
 2. **Never commit, print, or paste `ROBLOX_API_KEY` or `ROBLOX_COOKIE`.** They
    live in a gitignored `.env` (local) or CI secrets. Treat them like passwords.
-3. **`--config` is a global flag and works on either side of the subcommand.**
-   `rblxsync run --config prod.yml` and `rblxsync --config prod.yml run` are
-   the same thing.
+3. **`--config` and `--env` are global flags and work on either side of the
+   subcommand.** `rblxsync run --env dev` and `rblxsync --env dev run` are the
+   same thing. Check which universe a command will touch before running it.
 4. **Badges are free 5 a day per game (GMT), then 100 Robux each.** `run` reads
    and prints the day's free quota before changing anything, and stops before a
    badge past it unless given `--allow-paid-badges`. Never pass that flag
@@ -142,10 +154,10 @@ For the full field-by-field schema, defaults, and every gotcha, read
 
 | Command | What it does |
 | --- | --- |
-| `rblxsync run [--dry-run] [--allow-paid-badges]` | Sync universe settings + game passes, products, badges, thumbnails. Default command. Writes `rblxsync-lock.yml` and (if set) `Config.luau`. `--allow-paid-badges` lets badges past the day's free quota cost 100 Robux each. |
+| `rblxsync run [--dry-run] [--allow-paid-badges]` | Sync universe settings + game passes, products, badges, place settings, thumbnails. Default command. Writes `rblxsync-lock.yml` (`rblxsync-lock.<env>.yml` with `--env`) and (if set) `Config.luau`. `--allow-paid-badges` lets badges past the day's free quota cost 100 Robux each. |
 | `rblxsync publish` | Publish `.rbxl` places where `publish: true`. Always publishes (no "save"). Does NOT need the cookie. |
 | `rblxsync validate` | Parse + check the YAML (dup names, etc.). No API key, no network. |
-| `rblxsync import [--universe-id ID] [--place-id ID]... [--badge-id ID]...` | Pull a live experience into `rblxsync.yml` AND `rblxsync-lock.yml`, ids included. Use this to adopt rblxsync on an existing game. Remote wins on conflicts; the old config is backed up to `rblxsync.old.yml` first. Icons and thumbnails are not imported (a `thumbnails` section carries over as is). |
+| `rblxsync import [--universe-id ID] [--place-id ID]... [--badge-id ID]...` | Pull a live experience into `rblxsync.yml` AND `rblxsync-lock.yml`, ids included. Use this to adopt rblxsync on an existing game. Remote wins on conflicts; the old config is backed up to `rblxsync.old.yml` first. Places come with name, description, server size. Icons and thumbnails are not imported (a `thumbnails` section carries over as is). Top level only: it refuses `--env` (use `run --env <name>`, which adopts by name). |
 | `rblxsync export [-o PATH] [--lua]` | One-way snapshot of live resources to a flat Luau/Lua table. Read-only. NOT a config you can feed back in (use `import` for that), and NOT the same shape as `Config.luau`. |
 
 Full command reference, flags, the GitHub Action, environment variables, and

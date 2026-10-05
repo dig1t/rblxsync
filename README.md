@@ -38,7 +38,7 @@ products, a test place, and other people touching the game.
 |---|---|---|
 | Cut prices on 30 products for a weekend sale | 30 forms, 30 saves. Miss one and it sells at full price all weekend. | Change 30 numbers in one file, run it |
 | Put the IDs in your game code | Copy each number off a web page and paste it into Luau. One wrong digit prompts the wrong purchase. | The IDs land in a typed Luau file for you |
-| Set up a test universe | Recreate every pass, product, and badge by hand, then juggle two sets of IDs in your code | Copy the file, change `universe.id`, `rblxsync run --config dev.yml` |
+| Set up a test universe | Recreate every pass, product, and badge by hand, then juggle two sets of IDs in your code | Add its universe ID under `environments:` in the same file, then `rblxsync run --env dev` |
 | Find out who dropped the VIP price last week | There's no history. Go ask people. | `git log -p rblxsync.yml` |
 | Undo a bad edit | Remember what the description used to say, retype it, hope | `git revert`, run again |
 | Swap the game page thumbnails for an update | Upload each image, drag them into order, retype the alt text, delete the old ones | Replace the files, run it |
@@ -164,7 +164,7 @@ Don't retype everything. Pull it down instead:
 rblxsync import --universe-id 123456789
 ```
 
-This writes a `rblxsync.yml` from whatever is already on Roblox. Your old config gets saved as `rblxsync.old.yml` first, so nothing is lost.
+This writes a `rblxsync.yml` from whatever is already on Roblox. Your old config gets saved as `rblxsync.old.yml` first, so nothing is lost. Places come in with their names and server sizes.
 
 Two things it can't see on its own:
 
@@ -311,9 +311,60 @@ A few things to know about that file:
 - Empty sections stay as empty tables instead of vanishing, so indexing them is always safe.
 - Don't edit it by hand. It gets rewritten from scratch on every run.
 
+## A dev copy of your game
+
+Most games keep a second universe for testing, with the same passes, products, badges, and places under different IDs. Don't copy your config for it. Add it to the same file under `environments:`:
+
+```yaml
+universe:
+  id: 123456789            # the live game
+  name: "My Game"
+
+environments:
+  dev:
+    universe:
+      id: 987654321        # the dev copy
+      name: null           # leave the dev copy's name alone
+    output_path: src/shared/ConfigDev.luau
+
+game_passes:
+  - name: "VIP Pass"
+    id: 1111111            # in the live game
+    ids: { dev: 2222222 }  # in the dev copy
+    price: 100
+
+places:
+  - place_id: 555555555
+    ids: { dev: 666666666 }
+    name: "Lobby"
+    file_path: build/lobby.rbxl
+    publish: true
+```
+
+Then say which copy with `--env`:
+
+```bash
+rblxsync run --env dev --dry-run
+rblxsync run --env dev
+rblxsync publish --env dev
+```
+
+Leave out `--env` and you get the live game, same as before.
+
+- Every pass, product, badge, and place is written once. Change a price and each copy gets it the next time you run for that copy.
+- `--env dev` uses everything at the top level, except what `environments.dev` sets. A field set to `null` there is left alone in that copy.
+- Universe settings carry over too. If the top level sets `universe.name`, give the dev copy its own name or `null`, or a dev run renames it to match.
+- `name_prefix: "[dev] "` under the environment puts that in front of the game's name and every place name in that copy, so you can tell the copies apart in Studio. Passes, products, and badges keep their names, since game code looks them up by name.
+- An environment has to name its own `universe.id`. rblxsync refuses one that would point at the live game.
+- Each entry keeps its ID for each copy under `ids:`. rblxsync writes `ids: { dev: ... }` itself when it makes or finds an entry in the dev copy, the same way it writes `id:` for the live game.
+- Each copy gets its own lock file: `rblxsync-lock.yml` for the live game, `rblxsync-lock.dev.yml` for dev.
+- Give the copy its own `output_path` when your game code picks IDs by `game.GameId`. Leave it out and both copies write the same file, which suits a build that syncs one copy right before uploading it.
+
+Already made a dev copy with the same items? `rblxsync run --env dev --dry-run` shows what it matches by name. The real run updates them to match your config and writes their IDs into `ids:`. Place IDs go in by hand, because Roblox won't list a universe's places. `import` only pulls the live game: a dev copy's prices would overwrite the entries both copies share.
+
 ## The commands
 
-Working on more than one game? Point `--config` at a different file. It works on either side of the command.
+Working on more than one game? Point `--config` at a different file. It works on either side of the command. (A dev copy of the same game goes under [`environments:`](#a-dev-copy-of-your-game) instead.)
 
 ```bash
 rblxsync run --config production.yml
@@ -338,8 +389,9 @@ Only `universe.id` is required. Everything else is optional.
 | `game_passes` | One entry per game pass. |
 | `developer_products` | One entry per developer product. `price` is required here. |
 | `badges` | One entry per badge. New badges are free up to 5 a day, then cost **100 Robux** each. |
-| `places` | Place files for `rblxsync publish`. |
+| `places` | Your places: name, description, players per server, and the file `rblxsync publish` uploads. |
 | `thumbnails` | Images for your game page (up to 10, in order, with alt text) and the home page (up to 5). |
+| `environments` | Other copies of the game, like a dev universe. See [A dev copy of your game](#a-dev-copy-of-your-game). |
 | `assets_dir` | Folder your icon and thumbnail images live in. Defaults to `assets`. |
 | `creator` | Who owns uploaded icons. Only needed if you use icons. |
 | `badge_payment_source` | `"user"` or `"group"`. Needed to create badges. The wallet a paid badge comes out of. |
@@ -352,10 +404,14 @@ There's a full working example in [`rblxsync.example.yml`](rblxsync.example.yml)
 For each pass, product, or badge:
 
 1. If the entry has an `id:`, it uses that. The name is then just a label, so you can rename it freely.
-2. If there's no `id:`, it looks for a match by name, ignoring capitals.
+2. If there's no `id:`, it looks for a match by name, ignoring capitals, and writes the match's `id:` into your `rblxsync.yml`.
 3. Still nothing? It creates one, then writes the new `id:` straight back into your `rblxsync.yml`.
 
-That write-back happens the moment the resource is created, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate.
+With `--env dev`, the ID it uses and writes is the entry's `ids: { dev: ... }`.
+
+That write-back happens the moment the resource is created or found, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate.
+
+Places can't be created through the API, so a place needs its ID in the config. rblxsync reads each place first and only sends the settings that changed.
 
 Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A new pass or product gets its icon in the same call that creates it.
 
@@ -378,13 +434,17 @@ A new or changed image gets uploaded and the old upload deleted. The game page i
 
 **Badges are free 5 a day, then 100 Robux each.** Roblox gives every game 5 free badges per day (GMT). Before it changes anything, rblxsync reads how many are left today and prints it. It creates badges for free while they last. If a run needs more, it stops before touching anything unless you pass `--allow-paid-badges`. Each badge goes out with the price rblxsync expects, so Roblox refuses it rather than charge a different amount. Set `badge_payment_source` to `"user"` or `"group"` so Roblox knows which wallet a paid badge comes out of.
 
-**Universe settings need a cookie, not just an API key.** Roblox has no Open Cloud endpoint for changing your game's name or description, so rblxsync signs in with your browser cookie instead. If you set *any* field under `universe` besides `id`, you also need this in `.env`:
+**Universe settings need a cookie, not just an API key.** rblxsync changes everything under `universe` through a Roblox website endpoint that signs in with your browser cookie. If you set *any* field under `universe` besides `id`, you also need this in `.env`:
 
 ```bash
 ROBLOX_COOKIE=your_roblosecurity_cookie
 ```
 
 To get it: log into roblox.com, press F12, go to Application → Cookies, and copy `.ROBLOSECURITY`. Guard it like your password. Anyone with that string is logged in as you.
+
+**You can skip the cookie for the name and description.** Your game's name and description are its starting place's. Leave them out of `universe:` and set `name` and `description` on the starting place under `places:` instead, and the API key is enough. Set them in one spot only: a run stops if both set the same field.
+
+**A place open in Team Create can't be changed.** Roblox refuses place updates during a Team Create session. rblxsync only sends a place's settings when they differ from what Roblox has, so this only comes up after you change one. Close the session and run again.
 
 **The cookie rule is greedy.** It kicks in even for `genre` and `max_players`, which rblxsync only tracks locally and never sends anywhere. Setting just `genre` will still stop and ask for a cookie.
 
@@ -396,11 +456,11 @@ To get it: log into roblox.com, press F12, go to Application → Cookies, and co
 
 **Home page thumbnails use an API Roblox calls experimental.** If Roblox changes it, `home_page` can break before the rest of rblxsync does.
 
-**Run rblxsync from the folder that holds `rblxsync-lock.yml`.** The lock file is read from wherever your config lives but written to whatever folder you're standing in. Those being different will confuse it.
+**Run rblxsync from your project's root.** `assets_dir`, `output_path`, and each place's `file_path` are relative to the folder you run it from. The lock file always sits next to the config.
 
 ## `rblxsync-lock.yml`
 
-rblxsync writes this file to remember what it did: which IDs it made, which icons and thumbnails it already uploaded.
+rblxsync writes this file to remember what it did: which IDs it made, which icons and thumbnails it already uploaded. Each environment gets its own, like `rblxsync-lock.dev.yml`.
 
 **Commit it to git.** It's what keeps a run on your laptop and a run in CI from stepping on each other. Don't edit it by hand, it gets overwritten.
 
@@ -443,6 +503,8 @@ Whatever the action writes into `rblxsync.yml` and `rblxsync-lock.yml` stays on 
 | `roblox_cookie` | No | `""` | Your `.ROBLOSECURITY` cookie. |
 
 One catch with `args`: it gets split on spaces with no way to quote anything. Stick to plain flags like `--dry-run`. Anything with a space in it will break apart.
+
+Syncing a dev copy from CI? Pass `args: --env dev`, for example in a job that runs on your `dev` branch.
 
 ## Full reference
 

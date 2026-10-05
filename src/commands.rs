@@ -1,7 +1,7 @@
 use crate::api::{RobloxClient, RobloxCookieClient};
 use crate::config::{
-    BadgeConfig, DeveloperProductConfig, GamePassConfig, PlaceConfig, PrivateServerCost,
-    RblxSyncConfig, UniverseConfig,
+    check_environment, BadgeConfig, DeveloperProductConfig, GamePassConfig, PlaceConfig,
+    PrivateServerCost, RblxSyncConfig, UniverseConfig,
 };
 use crate::output;
 use crate::state::{ResourceState, SyncState, UniverseState};
@@ -57,6 +57,63 @@ pub fn validate(config: &RblxSyncConfig) -> Result<()> {
     // Check for duplicate badge names (case-insensitive)
     let badge_names: Vec<&str> = config.badges.iter().map(|b| b.name.as_str()).collect();
     check_for_duplicates(&badge_names, "badge")?;
+
+    // Every environment names its own universe. Checked on the top level only:
+    // a resolved config's `universe` is already its environment's, and
+    // `resolve` checked that one.
+    if config.env.is_none() {
+        let mut env_universes: HashMap<u64, &str> = HashMap::new();
+        for (name, overlay) in &config.environments {
+            let universe_id = check_environment(name, overlay, config.universe.id)?;
+            if let Some(other) = env_universes.insert(universe_id, name) {
+                return Err(anyhow!(
+                    "environments.{} and environments.{} both use universe {}",
+                    other,
+                    name,
+                    universe_id
+                ));
+            }
+        }
+    }
+    // Every `ids` key names an environment (a typo would otherwise sync that
+    // entry by name forever).
+    let entries = (config.game_passes.iter())
+        .map(|p| ("Game pass", format!("'{}'", p.name), &p.ids))
+        .chain(
+            (config.developer_products.iter())
+                .map(|p| ("Developer product", format!("'{}'", p.name), &p.ids)),
+        )
+        .chain((config.badges.iter()).map(|b| ("Badge", format!("'{}'", b.name), &b.ids)))
+        .chain((config.places.iter()).map(|p| ("Place", p.label(), &p.ids)));
+    for (kind, label, ids) in entries {
+        if let Some(env) = ids
+            .keys()
+            .find(|env| !config.environments.contains_key(*env))
+        {
+            return Err(anyhow!(
+                "{} {}: `ids` has '{}', which isn't in `environments:`",
+                kind,
+                label,
+                env
+            ));
+        }
+    }
+
+    for place in &config.places {
+        // Only the top level: a place missing from one environment is fine.
+        if config.env.is_none() && place.place_id.is_none() && place.ids.is_empty() {
+            return Err(anyhow!(
+                "Place {}: needs a `place_id`, or `ids` for the environments it is in",
+                place.label()
+            ));
+        }
+        if place.publish && place.file_path.is_empty() {
+            return Err(anyhow!(
+                "Place {}: `publish: true` needs a `file_path`",
+                place.label()
+            ));
+        }
+    }
 
     crate::thumbnails::validate(&config.thumbnails)
 }
@@ -226,6 +283,46 @@ async fn preflight(
         }
     }
 
+    // The root place's name and description are the experience's. Set both
+    // here and in `universe:`, and the two syncs would undo each other.
+    let root_clash = |p: &PlaceConfig| -> Vec<&str> {
+        let mut fields = Vec::new();
+        if p.name.is_some() && config.universe.name.is_some() {
+            fields.push("name");
+        }
+        if p.description.is_some() && config.universe.description.is_some() {
+            fields.push("description");
+        }
+        fields
+    };
+    if config
+        .places
+        .iter()
+        .any(|p| p.place_id.is_some() && !root_clash(p).is_empty())
+    {
+        match client.list_places(universe_id).await {
+            Ok(roots) => {
+                for place in &config.places {
+                    let clash = root_clash(place);
+                    if place.place_id.is_some_and(|id| roots.contains(&id)) && !clash.is_empty() {
+                        errors.push(format!(
+                            "Place {} is the root place, so its {} is the experience's, which `universe:` already sets. Set it in one of the two",
+                            place.label(),
+                            clash.join(" and ")
+                        ));
+                    }
+                }
+            }
+            Err(e) if dry_run => warn!(
+                "Preflight: could not read the root place (dry-run; skipping its check): {}",
+                e
+            ),
+            Err(e) => errors.push(format!(
+                "Could not read the root place to check its settings against `universe:`: {:#}",
+                e
+            )),
+        }
+    }
     errors.extend(crate::thumbnails::missing_images(config));
 
     if !errors.is_empty() {
@@ -256,7 +353,13 @@ pub async fn run(
     allow_paid_badges: bool,
     config_path: &Path,
 ) -> Result<()> {
-    info!("Starting sync... (dry_run: {})", dry_run);
+    match &config.env {
+        Some(env) => info!(
+            "Starting sync of environment '{}' (universe {})... (dry_run: {})",
+            env, config.universe.id, dry_run
+        ),
+        None => info!("Starting sync... (dry_run: {})", dry_run),
+    }
 
     // Validate config before proceeding
     validate(&config)?;
@@ -317,6 +420,7 @@ pub async fn run(
         badge_budget,
     )
     .await?;
+    sync_places(universe_id, &config, &client, dry_run).await?;
     thumbnail_plan
         .apply(&mut state, &client, lock_root(config_path))
         .await?;
@@ -324,7 +428,7 @@ pub async fn run(
     // Save state next to the config (where it is also loaded from), so a
     // `--config sub/x.yml` keeps the lock file beside it. Atomic via state.save.
     if !dry_run {
-        state.save(lock_root(config_path))?;
+        state.save(lock_root(config_path), config.env.as_deref())?;
     } else {
         info!("Dry Run: Would save state.");
     }
@@ -345,27 +449,40 @@ pub async fn run(
 pub async fn publish(config: RblxSyncConfig, client: RobloxClient) -> Result<()> {
     let universe_id = config.universe.id;
 
-    for place in config.places {
+    for place in &config.places {
         if place.publish {
-            info!(
-                "Publishing place {} from {}",
-                place.place_id, place.file_path
-            );
+            let Some(place_id) = place.place_id else {
+                warn!(
+                    "Skipping place {}: {}",
+                    place.label(),
+                    missing_place_id(&config)
+                );
+                continue;
+            };
+            info!("Publishing place {} from {}", place_id, place.file_path);
             let path = Path::new(&place.file_path);
             if !path.exists() {
                 error!("File not found: {}", place.file_path);
                 continue;
             }
-            match client
-                .publish_place(universe_id, place.place_id, path)
-                .await
-            {
-                Ok(_) => info!("Published place {}", place.place_id),
-                Err(e) => error!("Failed to publish place {}: {}", place.place_id, e),
+            match client.publish_place(universe_id, place_id, path).await {
+                Ok(_) => info!("Published place {}", place_id),
+                Err(e) => error!("Failed to publish place {}: {}", place_id, e),
             }
         }
     }
     Ok(())
+}
+
+/// Why a place entry has no id in this run's universe.
+fn missing_place_id(config: &RblxSyncConfig) -> String {
+    match &config.env {
+        Some(env) => format!(
+            "it has no id for environment '{}' (add `ids: {{ {}: <place id> }}`)",
+            env, env
+        ),
+        None => "it has no `place_id`".to_string(),
+    }
 }
 
 /// Directory the lock file (`rblxsync-lock.yml`) lives in: the config file's
@@ -377,8 +494,9 @@ fn lock_root(config_path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-/// Immediately write a newly-created resource's id back into its `rblxsync.yml`
-/// entry, via a surgical comment-preserving insert ([`yml_edit::insert_id`]).
+/// Immediately write a newly-created (or name-matched) resource's id back into
+/// its `rblxsync.yml` entry, via a surgical comment-preserving insert
+/// ([`yml_edit::insert_id`]): its `id`, or `ids.<env>` for an environment.
 ///
 /// Called the instant a resource is created — not batched at the end — so the
 /// yml is the durable record of identity even if the run later fails or the lock
@@ -386,7 +504,13 @@ fn lock_root(config_path: &Path) -> &Path {
 /// the resource by id instead of creating a duplicate. If the entry can't be
 /// located, warn (the id was already logged on create); on success the file is
 /// read and rewritten once.
-fn write_back_id(config_path: &Path, section: &str, name: &str, id: u64) -> Result<()> {
+fn write_back_id(
+    config_path: &Path,
+    env: Option<&str>,
+    section: &str,
+    name: &str,
+    id: u64,
+) -> Result<()> {
     if !config_path.exists() {
         return Ok(());
     }
@@ -394,10 +518,18 @@ fn write_back_id(config_path: &Path, section: &str, name: &str, id: u64) -> Resu
     let yaml = std::fs::read_to_string(config_path)
         .with_context(|| format!("Failed to read config for id write-back: {:?}", config_path))?;
 
-    match yml_edit::insert_id(&yaml, section, name, id) {
-        Some(updated) => crate::fsutil::atomic_write(config_path, updated.as_bytes())
+    let updated = match env {
+        Some(env) => yml_edit::insert_env_id(&yaml, section, name, env, id),
+        None => yml_edit::insert_id(&yaml, section, name, id),
+    };
+    match (updated, env) {
+        (Some(updated), _) => crate::fsutil::atomic_write(config_path, updated.as_bytes())
             .context("Failed to write config after id write-back")?,
-        None => warn!(
+        (None, Some(env)) => warn!(
+            "Could not write id {} for \"{}\" into {:?} - add `ids: {{ {}: {} }}` to its entry",
+            id, name, config_path, env, id
+        ),
+        (None, None) => warn!(
             "Could not write id for \"{}\" into {:?} - run `rblxsync import` to backfill ids",
             name, config_path
         ),
@@ -467,7 +599,7 @@ pub async fn import(
         None
     };
     let root = config_path.parent().unwrap_or(Path::new("."));
-    let existing_state = SyncState::load(root).unwrap_or_default();
+    let existing_state = SyncState::load(root, None).unwrap_or_default();
 
     // Resolve universe id.
     let universe_id = universe_id_override
@@ -605,9 +737,22 @@ pub async fn import(
     // Places: the API key can only auto-discover the root place. Any extra
     // place ids the user passes via --place-id are validated + named through
     // the universe-scoped single-place GET (a wrong id/universe returns 404).
-    let mut remote_place_ids = client.list_places(universe_id).await?;
+    let root_place_ids = client.list_places(universe_id).await?;
+    let mut remote_places: Vec<(u64, serde_json::Value)> = Vec::new();
+    for pid in &root_place_ids {
+        // The root place is this universe's by definition; reading it only
+        // adds its settings, so a failed read keeps it without them.
+        let place = client
+            .get_place(universe_id, *pid)
+            .await
+            .unwrap_or_else(|e| {
+                warn!("Could not read the root place {}'s settings: {}", pid, e);
+                serde_json::Value::Null
+            });
+        remote_places.push((*pid, place));
+    }
     for pid in &place_ids {
-        if remote_place_ids.contains(pid) {
+        if remote_places.iter().any(|(id, _)| id == pid) {
             continue;
         }
         match client.get_place(universe_id, *pid).await {
@@ -635,7 +780,7 @@ pub async fn import(
                     .and_then(|v| v.as_str())
                     .unwrap_or("<unnamed>");
                 info!("  Importing place {} (\"{}\")", pid, name);
-                remote_place_ids.push(*pid);
+                remote_places.push((*pid, place));
             }
             Err(e) => warn!(
                 "Skipping place {}: not found in universe {} (or unreadable): {}",
@@ -670,9 +815,15 @@ pub async fn import(
             }
         }
     }
+    // A matched entry keeps its environment ids: they aren't on this universe.
+    let locals = existing_config.iter();
     for r in &remote_passes {
         game_passes.push(GamePassConfig {
             id: Some(r.id),
+            ids: (locals.clone().flat_map(|c| &c.game_passes))
+                .find(|l| local_matches(l.id, &l.name, r))
+                .map(|l| l.ids.clone())
+                .unwrap_or_default(),
             name: r.name.clone(),
             description: r.description.clone(),
             price: r.price.map(|p| p as u32),
@@ -698,6 +849,10 @@ pub async fn import(
     for r in &remote_products {
         developer_products.push(DeveloperProductConfig {
             id: Some(r.id),
+            ids: (locals.clone().flat_map(|c| &c.developer_products))
+                .find(|l| local_matches(l.id, &l.name, r))
+                .map(|l| l.ids.clone())
+                .unwrap_or_default(),
             name: r.name.clone(),
             description: r.description.clone(),
             price: r.price.unwrap_or(0) as u32,
@@ -723,6 +878,10 @@ pub async fn import(
     for r in &remote_badges {
         badges.push(BadgeConfig {
             id: Some(r.id),
+            ids: (locals.clone().flat_map(|c| &c.badges))
+                .find(|l| local_matches(l.id, &l.name, r))
+                .map(|l| l.ids.clone())
+                .unwrap_or_default(),
             name: r.name.clone(),
             description: r.description.clone(),
             icon: None,
@@ -730,21 +889,42 @@ pub async fn import(
         });
     }
 
-    // Places: keep all existing, add remote-only with placeholder.
+    // Places: keep every local entry (its file, publish flag and ids) and take
+    // each imported place's settings from Roblox. The root place's name and
+    // description are the experience's, which `universe:` already holds.
     let mut places: Vec<PlaceConfig> = existing_config
         .as_ref()
         .map(|c| c.places.clone())
         .unwrap_or_default();
-    for pid in &remote_place_ids {
-        if !places.iter().any(|p| p.place_id == *pid) {
-            places.push(PlaceConfig {
-                place_id: *pid,
-                file_path: String::new(),
-                publish: false,
-            });
+    for (pid, remote) in &remote_places {
+        let index = match places.iter().position(|p| p.place_id == Some(*pid)) {
+            Some(index) => index,
+            None => {
+                places.push(PlaceConfig {
+                    place_id: Some(*pid),
+                    ..Default::default()
+                });
+                places.len() - 1
+            }
+        };
+        if remote.is_null() {
+            continue;
         }
+        let place = &mut places[index];
+        let subplace = !root_place_ids.contains(pid);
+        let text = |key: &str| {
+            remote[key]
+                .as_str()
+                .filter(|s| subplace && !s.is_empty())
+                .map(str::to_string)
+        };
+        place.name = text("displayName");
+        place.description = text("description");
+        place.server_size = remote["serverSize"]
+            .as_u64()
+            .and_then(|size| u32::try_from(size).ok());
     }
-    if !remote_place_ids.is_empty() {
+    if !remote_places.is_empty() {
         warn!("The API key auto-discovers only the root place. Re-run with `--place-id <id>` (repeatable) to import additional places, or add them to the `places:` section manually. Set each place's `file_path` to publish it.");
     }
 
@@ -755,6 +935,11 @@ pub async fn import(
             .unwrap_or_else(|| "assets".to_string()),
         creator: existing_config.as_ref().and_then(|c| c.creator.clone()),
         universe,
+        environments: existing_config
+            .as_ref()
+            .map(|c| c.environments.clone())
+            .unwrap_or_default(),
+        env: None,
         game_passes,
         developer_products,
         badges,
@@ -863,7 +1048,7 @@ pub async fn import(
     crate::fsutil::atomic_write(config_path, yaml.as_bytes())
         .with_context(|| format!("Failed to write config to {:?}", config_path))?;
     merged_state
-        .save(root)
+        .save(root, None)
         .context("Failed to save lock file")?;
 
     // Regenerate the Luau output if the (carried-over) config requests it, so
@@ -877,7 +1062,7 @@ pub async fn import(
         remote_passes.len(),
         remote_products.len(),
         remote_badges.len(),
-        remote_place_ids.len()
+        remote_places.len()
     );
     if let Some(name) = backup_name {
         info!("Previous config backed up to {}", name);
@@ -1312,13 +1497,21 @@ async fn sync_game_passes(
                 new_pass_fields(pass)
             );
             created_count += 1;
-            // Persist the new id into the yml right now (entries with an
-            // explicit id never reach this branch), so a duplicate can never be
-            // created even if a later step fails before state is saved.
-            write_back_id(config_path, "game_passes", &pass.name, new_id)?;
             did_create = true;
             new_id
         };
+        // Persist the id into the yml right now, whether this run created the
+        // pass or matched it by name, so a duplicate can never be created even
+        // if a later step fails before state is saved, or the pass is renamed.
+        if pass.id.is_none() && id != 0 && !dry_run {
+            write_back_id(
+                config_path,
+                config.env.as_deref(),
+                "game_passes",
+                &pass.name,
+                id,
+            )?;
+        }
 
         // Update Remote (Idempotent PATCH) - only if newly created or has changes
         if is_new {
@@ -1413,7 +1606,7 @@ async fn sync_game_passes(
             // full state survives a later failure (the yml already has the id).
             if did_create {
                 state
-                    .save(lock_root(config_path))
+                    .save(lock_root(config_path), config.env.as_deref())
                     .context("Failed to save lock file after create")?;
             }
         }
@@ -1585,10 +1778,19 @@ async fn sync_developer_products(
                 prod.name, new_id,
                 if prod.icon.is_some() { ", icon" } else { "" });
             created_count += 1;
-            write_back_id(config_path, "developer_products", &prod.name, new_id)?;
             did_create = true;
             new_id
         };
+        // Persist the id right away, created or matched by name (see passes).
+        if prod.id.is_none() && id != 0 && !dry_run {
+            write_back_id(
+                config_path,
+                config.env.as_deref(),
+                "developer_products",
+                &prod.name,
+                id,
+            )?;
+        }
 
         // Update Remote (Idempotent PATCH) - only if has changes
         if is_new {
@@ -1675,7 +1877,7 @@ async fn sync_developer_products(
             );
             if did_create {
                 state
-                    .save(lock_root(config_path))
+                    .save(lock_root(config_path), config.env.as_deref())
                     .context("Failed to save lock file after create")?;
             }
         }
@@ -1966,10 +2168,19 @@ async fn sync_badges(
             // every-other badge and requiring multiple sync reruns to
             // get through a wave.
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            write_back_id(config_path, "badges", &badge.name, new_id)?;
             did_create = true;
             new_id
         };
+        // Persist the id right away, created or matched by name (see passes).
+        if badge.id.is_none() && id != 0 && !dry_run {
+            write_back_id(
+                config_path,
+                config.env.as_deref(),
+                "badges",
+                &badge.name,
+                id,
+            )?;
+        }
 
         // Update state with icon hash
         let icon_hash = icon_data.as_ref().map(|(_, _, hash)| hash.clone());
@@ -2040,7 +2251,7 @@ async fn sync_badges(
             );
             if did_create {
                 state
-                    .save(lock_root(config_path))
+                    .save(lock_root(config_path), config.env.as_deref())
                     .context("Failed to save lock file after create")?;
             }
         }
@@ -2064,6 +2275,115 @@ async fn sync_badges(
 
 /// Refuses a badge that would cost Robux unless `--allow-paid-badges` was
 /// passed.
+/// Syncs each place's name, description and server size. Places can't be
+/// created, so an entry with no id in this universe is skipped. Each place is
+/// read first and only the fields that differ are sent: Roblox refuses any
+/// update while a place is open in Team Create, so a PATCH that changes
+/// nothing could still fail the run.
+async fn sync_places(
+    universe_id: u64,
+    config: &RblxSyncConfig,
+    client: &RobloxClient,
+    dry_run: bool,
+) -> Result<()> {
+    let places: Vec<&PlaceConfig> = config.places.iter().filter(|p| p.has_settings()).collect();
+    if places.is_empty() {
+        return Ok(());
+    }
+    info!("Syncing Places...");
+
+    let mut updated_count = 0;
+    let mut skipped_count = 0;
+    for place in places {
+        let label = place.label();
+        let Some(place_id) = place.place_id else {
+            warn!("  [SKIP] Place {} - {}", label, missing_place_id(config));
+            skipped_count += 1;
+            continue;
+        };
+        let remote = match client.get_place(universe_id, place_id).await {
+            Ok(remote) => remote,
+            Err(e) if dry_run => {
+                warn!(
+                    "Dry Run: Failed to read place {} (likely due to invalid credentials/universe): {}",
+                    place_id, e
+                );
+                serde_json::Value::Null
+            }
+            Err(e) => {
+                return Err(e.context(format!(
+                    "Failed to read place {} in universe {}",
+                    place_id, universe_id
+                )))
+            }
+        };
+
+        let mut fields = serde_json::Map::new();
+        let mut changes: Vec<&str> = Vec::new();
+        if let Some(name) = &place.name {
+            if remote["displayName"].as_str() != Some(name.as_str()) {
+                fields.insert("displayName".to_string(), name.clone().into());
+                changes.push("name");
+            }
+        }
+        if let Some(description) = &place.description {
+            if remote["description"].as_str() != Some(description.as_str()) {
+                fields.insert("description".to_string(), description.clone().into());
+                changes.push("description");
+            }
+        }
+        if let Some(size) = place.server_size {
+            if remote["serverSize"].as_u64() != Some(u64::from(size)) {
+                fields.insert("serverSize".to_string(), size.into());
+                changes.push("server_size");
+            }
+        }
+
+        if fields.is_empty() {
+            info!(
+                "  [SKIP] Place {} (ID: {}) - no changes detected",
+                label, place_id
+            );
+            skipped_count += 1;
+        } else if dry_run {
+            info!(
+                "  [UPDATE] Place {} (ID: {}) - would update: {}",
+                label,
+                place_id,
+                changes.join(", ")
+            );
+            updated_count += 1;
+        } else {
+            if let Err(e) = client.update_place(universe_id, place_id, &fields).await {
+                let hint = match e.to_string() {
+                    s if s.contains("409") => {
+                        ": it's open in Team Create. Close the session and run again"
+                    }
+                    s if s.contains("403") => ": the API key needs the universe.place:write scope",
+                    _ => "",
+                };
+                return Err(e.context(format!(
+                    "Failed to update place {} (ID: {}){}",
+                    label, place_id, hint
+                )));
+            }
+            info!(
+                "  [UPDATED] Place {} (ID: {}) - updated: {}",
+                label,
+                place_id,
+                changes.join(", ")
+            );
+            updated_count += 1;
+        }
+    }
+
+    info!(
+        "Places Summary: {} updated, {} skipped (unchanged)",
+        updated_count, skipped_count
+    );
+    Ok(())
+}
+
 fn refuse_unpaid_badge(name: &str, cost: Option<u64>, allow_paid: bool) -> Result<()> {
     match cost {
         Some(robux) if robux > 0 && !allow_paid => Err(anyhow!(
@@ -2313,12 +2633,15 @@ mod tests {
             thumbnails: Default::default(),
             badge_payment_source: None,
             output_path: None,
+            environments: Default::default(),
+            env: None,
         }
     }
 
     fn game_pass(name: &str, price: Option<u32>) -> GamePassConfig {
         GamePassConfig {
             id: None,
+            ids: Default::default(),
             name: name.to_string(),
             description: None,
             price,
@@ -2505,6 +2828,7 @@ mod tests {
         let mut config = base_config();
         config.badges = vec![BadgeConfig {
             id: None,
+            ids: Default::default(),
             name: "First Win".to_string(),
             description: Some("changed".to_string()),
             icon: None,
@@ -2551,6 +2875,7 @@ mod tests {
         let mut config = base_config();
         config.badges = vec![BadgeConfig {
             id: None,
+            ids: Default::default(),
             name: "No Icon Badge".to_string(),
             description: None,
             icon: None,
@@ -2599,6 +2924,7 @@ mod tests {
         config.badge_payment_source = Some("user".to_string());
         config.badges = vec![BadgeConfig {
             id: None,
+            ids: Default::default(),
             name: "Newbie".to_string(),
             description: None,
             icon: None,
@@ -2634,6 +2960,7 @@ mod tests {
         config.creator = None;
         config.game_passes = vec![GamePassConfig {
             id: None,
+            ids: Default::default(),
             name: "VIP".to_string(),
             description: None,
             price: Some(100),
@@ -2676,6 +3003,7 @@ mod tests {
         config.badge_payment_source = Some("user".to_string());
         config.game_passes = vec![GamePassConfig {
             id: None,
+            ids: Default::default(),
             name: "VIP".to_string(),
             description: None,
             price: Some(100),
@@ -2684,6 +3012,7 @@ mod tests {
         }];
         config.badges = vec![BadgeConfig {
             id: None,
+            ids: Default::default(),
             name: "Win".to_string(),
             description: None,
             icon: Some("badge.png".to_string()),
@@ -2792,7 +3121,7 @@ mod tests {
         assert_eq!(parsed.game_passes[0].id, Some(42));
         assert_eq!(parsed.game_passes[0].price, Some(200));
 
-        let state = SyncState::load(dir.path()).unwrap();
+        let state = SyncState::load(dir.path(), None).unwrap();
         assert_eq!(state.game_passes.get(&42).unwrap().price, Some(200));
     }
 
@@ -2849,13 +3178,13 @@ mod tests {
         // Seed a stale lock entry not present in yml or remote.
         let mut state = SyncState::default();
         state.update_game_pass(999, "Stale".to_string(), None, Some(10), None, None, None);
-        state.save(dir.path()).unwrap();
+        state.save(dir.path(), None).unwrap();
 
         import(client(&server), &cfg, None, vec![], vec![])
             .await
             .unwrap();
 
-        let new_state = SyncState::load(dir.path()).unwrap();
+        let new_state = SyncState::load(dir.path(), None).unwrap();
         assert!(!new_state.game_passes.contains_key(&999));
         assert!(new_state.game_passes.is_empty());
     }
@@ -2950,10 +3279,18 @@ mod tests {
 
         let parsed: RblxSyncConfig =
             serde_yaml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-        let existing = parsed.places.iter().find(|p| p.place_id == 500).unwrap();
+        let existing = parsed
+            .places
+            .iter()
+            .find(|p| p.place_id == Some(500))
+            .unwrap();
         assert_eq!(existing.file_path, "places/main.rbxl");
         assert!(existing.publish);
-        let root = parsed.places.iter().find(|p| p.place_id == 777).unwrap();
+        let root = parsed
+            .places
+            .iter()
+            .find(|p| p.place_id == Some(777))
+            .unwrap();
         assert_eq!(root.file_path, "");
         assert!(!root.publish);
     }
@@ -3047,12 +3384,16 @@ mod tests {
 
         let parsed: RblxSyncConfig =
             serde_yaml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-        let ids: Vec<u64> = parsed.places.iter().map(|p| p.place_id).collect();
+        let ids: Vec<u64> = parsed.places.iter().filter_map(|p| p.place_id).collect();
         assert!(ids.contains(&777)); // root, auto-discovered
         assert!(ids.contains(&888)); // valid --place-id
         assert!(!ids.contains(&999)); // invalid id skipped, not aborted
         assert!(!ids.contains(&555)); // mismatched experience id skipped
-        let extra = parsed.places.iter().find(|p| p.place_id == 888).unwrap();
+        let extra = parsed
+            .places
+            .iter()
+            .find(|p| p.place_id == Some(888))
+            .unwrap();
         assert_eq!(extra.file_path, "");
         assert!(!extra.publish);
     }
@@ -3266,6 +3607,7 @@ mod tests {
     fn badge(name: &str, icon: &str) -> BadgeConfig {
         BadgeConfig {
             id: None,
+            ids: Default::default(),
             name: name.to_string(),
             description: Some("Earned it".to_string()),
             icon: Some(icon.to_string()),
@@ -3378,6 +3720,7 @@ mod tests {
         config.assets_dir = assets.path().to_string_lossy().to_string();
         config.developer_products = vec![DeveloperProductConfig {
             id: None,
+            ids: Default::default(),
             name: "400 Coins".to_string(),
             description: Some("A small pouch of coins".to_string()),
             price: 49,
@@ -3626,5 +3969,366 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(budget.free_left, None);
+    }
+
+    // --- environments ---
+
+    fn parse(yaml: &str) -> RblxSyncConfig {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[test]
+    fn validate_checks_environments_and_ids() {
+        let ok = "universe: { id: 1 }\nenvironments:\n  dev: { universe: { id: 2 } }\n\
+                  game_passes:\n  - name: VIP\n    ids: { dev: 5 }\n";
+        validate(&parse(ok)).unwrap();
+
+        let typo = ok.replace("ids: { dev: 5 }", "ids: { deb: 5 }");
+        let msg = validate(&parse(&typo)).unwrap_err().to_string();
+        assert!(msg.contains("'deb'"), "{}", msg);
+
+        let shared = "universe: { id: 1 }\nenvironments:\n  dev: { universe: { id: 2 } }\n  test: { universe: { id: 2 } }\n";
+        let msg = validate(&parse(shared)).unwrap_err().to_string();
+        assert!(msg.contains("both use universe 2"), "{}", msg);
+    }
+
+    #[test]
+    fn validate_checks_place_ids_and_files() {
+        let config = parse(
+            "universe: { id: 1 }\nenvironments:\n  dev: { universe: { id: 2 } }\n\
+             places:\n  - place_id: 5\n    name: Live only\n",
+        );
+        validate(&config).unwrap();
+        // Missing from dev is fine: dev runs skip it.
+        validate(&config.resolve(Some("dev")).unwrap()).unwrap();
+
+        let no_id = parse("universe: { id: 1 }\nplaces:\n  - name: Lobby\n");
+        let msg = validate(&no_id).unwrap_err().to_string();
+        assert!(msg.contains("needs a `place_id`"), "{}", msg);
+
+        let no_file = parse("universe: { id: 1 }\nplaces:\n  - place_id: 5\n    publish: true\n");
+        let msg = validate(&no_file).unwrap_err().to_string();
+        assert!(msg.contains("needs a `file_path`"), "{}", msg);
+    }
+
+    // A dev run creates in the dev universe, writes the new id into the
+    // entry's `ids`, and keeps its own lock file.
+    #[tokio::test]
+    async fn run_env_creates_in_its_universe_and_writes_ids() {
+        let server = MockServer::start().await;
+        for list in [
+            "/game-passes/v1/universes/2/game-passes",
+            "/developer-products/v2/universes/2/developer-products/creator",
+            "/v1/universes/2/badges",
+        ] {
+            Mock::given(method("GET"))
+                .and(path(list))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/game-passes/v1/universes/2/game-passes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"gamePassId": 7})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("rblxsync.yml");
+        std::fs::write(
+            &cfg,
+            "universe:\n  id: 1\nenvironments:\n  dev:\n    universe:\n      id: 2\n\
+             game_passes:\n  # the premium pass\n  - name: VIP\n    id: 10\n    price: 100\n",
+        )
+        .unwrap();
+
+        let config = RblxSyncConfig::load(&cfg)
+            .unwrap()
+            .resolve(Some("dev"))
+            .unwrap();
+        run(
+            config,
+            SyncState::default(),
+            client(&server),
+            None,
+            false,
+            false,
+            &cfg,
+        )
+        .await
+        .unwrap();
+
+        let written = std::fs::read_to_string(&cfg).unwrap();
+        assert!(
+            written
+                .contains("  # the premium pass\n  - name: VIP\n    id: 10\n    ids: { dev: 7 }\n"),
+            "{}",
+            written
+        );
+        assert!(!dir.path().join("rblxsync-lock.yml").exists());
+        let dev = SyncState::load(dir.path(), Some("dev")).unwrap();
+        assert_eq!(dev.game_passes.get(&7).unwrap().name, "VIP");
+
+        // The next dev run finds the pass by its dev id.
+        let config = RblxSyncConfig::load(&cfg)
+            .unwrap()
+            .resolve(Some("dev"))
+            .unwrap();
+        assert_eq!(config.game_passes[0].id, Some(7));
+    }
+
+    // An entry matched by name gets its id written back, not just a created one.
+    #[tokio::test]
+    async fn adopting_by_name_writes_the_id_back() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/game-passes/v1/universes/1/game-passes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"data": [{"id": 42, "name": "VIP Pass"}], "nextPageCursor": null}),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/game-passes/v1/universes/1/game-passes/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("rblxsync.yml");
+        std::fs::write(&cfg, "game_passes:\n  - name: VIP Pass\n    price: 100\n").unwrap();
+        let mut config = base_config();
+        config.game_passes = vec![game_pass("VIP Pass", Some(100))];
+
+        sync_game_passes(
+            1,
+            &config,
+            &mut SyncState::default(),
+            &client(&server),
+            false,
+            &cfg,
+        )
+        .await
+        .unwrap();
+        let written = std::fs::read_to_string(&cfg).unwrap();
+        assert!(written.contains("    id: 42\n"), "{}", written);
+
+        // A dry run writes nothing.
+        std::fs::write(&cfg, "game_passes:\n  - name: VIP Pass\n    price: 100\n").unwrap();
+        sync_game_passes(
+            1,
+            &config,
+            &mut SyncState::default(),
+            &client(&server),
+            true,
+            &cfg,
+        )
+        .await
+        .unwrap();
+        assert!(!std::fs::read_to_string(&cfg).unwrap().contains("id:"));
+    }
+
+    // --- places ---
+
+    fn place(id: Option<u64>, name: Option<&str>, server_size: Option<u32>) -> PlaceConfig {
+        PlaceConfig {
+            place_id: id,
+            name: name.map(str::to_string),
+            server_size,
+            ..Default::default()
+        }
+    }
+
+    async fn mount_place(server: &MockServer, id: u64, body: serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(path(format!("/cloud/v2/universes/1/places/{}", id)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    // Only the fields that differ go out, named in the update mask.
+    #[tokio::test]
+    async fn sync_places_patches_only_changed_fields() {
+        let server = MockServer::start().await;
+        mount_place(
+            &server,
+            5,
+            json!({"displayName": "Old", "description": "", "serverSize": 30}),
+        )
+        .await;
+        Mock::given(method("PATCH"))
+            .and(path("/cloud/v2/universes/1/places/5"))
+            .and(wiremock::matchers::query_param("updateMask", "displayName"))
+            .and(wiremock::matchers::body_json(
+                json!({"displayName": "Lobby"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut config = base_config();
+        config.places = vec![place(Some(5), Some("Lobby"), Some(30))];
+        sync_places(1, &config, &client(&server), false)
+            .await
+            .unwrap();
+    }
+
+    // Matching settings, a dry run, or a place missing from this universe send
+    // no PATCH (one could fail while the place is open in Team Create).
+    #[tokio::test]
+    async fn sync_places_sends_nothing_without_a_change() {
+        let server = MockServer::start().await;
+        mount_place(
+            &server,
+            5,
+            json!({"displayName": "Lobby", "serverSize": 30}),
+        )
+        .await;
+        mount_place(&server, 6, json!({"displayName": "Old"})).await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let mut config = base_config();
+        config.places = vec![
+            place(Some(5), Some("Lobby"), Some(30)),
+            place(None, Some("Not here"), None),
+        ];
+        sync_places(1, &config, &client(&server), false)
+            .await
+            .unwrap();
+
+        config.places = vec![place(Some(6), Some("New"), None)];
+        sync_places(1, &config, &client(&server), true)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sync_places_explains_a_team_create_refusal() {
+        let server = MockServer::start().await;
+        mount_place(&server, 5, json!({"displayName": "Old"})).await;
+        Mock::given(method("PATCH"))
+            .and(path("/cloud/v2/universes/1/places/5"))
+            .respond_with(ResponseTemplate::new(409))
+            .mount(&server)
+            .await;
+
+        let mut config = base_config();
+        config.places = vec![place(Some(5), Some("Lobby"), None)];
+        let msg = sync_places(1, &config, &client(&server), false)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("Team Create"), "{}", msg);
+    }
+
+    // The root place's name is the experience's: setting it there and in
+    // `universe:` stops the run before anything changes.
+    #[tokio::test]
+    async fn preflight_refuses_root_place_name_set_twice() {
+        let server = MockServer::start().await;
+        mount_empty_badge_list(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/cloud/v2/universes/1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"rootPlace": "universes/1/places/777"})),
+            )
+            .mount(&server)
+            .await;
+
+        let mut config = base_config();
+        config.universe.name = Some("My Game".to_string());
+        config.places = vec![place(Some(888), Some("Lobby"), None)];
+        let state = SyncState::default();
+        preflight(1, &config, &state, &client(&server), false, false)
+            .await
+            .unwrap();
+
+        config
+            .places
+            .push(place(Some(777), Some("Other name"), None));
+        let msg = preflight(1, &config, &state, &client(&server), false, false)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("root place"), "{}", msg);
+        assert!(!msg.contains("Lobby"), "{}", msg);
+    }
+
+    // Import names each subplace, takes server sizes, and keeps the
+    // environments and each entry's environment ids.
+    #[tokio::test]
+    async fn import_pulls_place_settings_and_keeps_environment_ids() {
+        let server = MockServer::start().await;
+        mount_universe(
+            &server,
+            Some("universes/1/places/777"),
+            json!({"data": [{"id": 42, "name": "VIP Pass"}], "nextPageCursor": null}),
+            vec![(42, json!({"gamePassId": 42, "name": "VIP Pass"}))],
+            json!({"developerProducts": [], "nextPageToken": null}),
+            json!({"badges": [], "nextPageCursor": null}),
+        )
+        .await;
+        mount_place(
+            &server,
+            777,
+            json!({"displayName": "Imported Game", "description": "Imported description", "serverSize": 50, "root": true}),
+        )
+        .await;
+        mount_place(
+            &server,
+            888,
+            json!({"displayName": "Lobby", "description": "", "serverSize": 12, "path": "universes/1/places/888"}),
+        )
+        .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("rblxsync.yml");
+        std::fs::write(
+            &cfg,
+            "universe:\n  id: 1\nenvironments:\n  dev:\n    universe:\n      id: 2\n\
+             game_passes:\n  - name: VIP Pass\n    ids: { dev: 99 }\n\
+             places:\n  - place_id: 888\n    ids: { dev: 98 }\n    file_path: lobby.rbxl\n    publish: true\n",
+        )
+        .unwrap();
+
+        import(client(&server), &cfg, None, vec![888], vec![])
+            .await
+            .unwrap();
+
+        let parsed = RblxSyncConfig::load(&cfg).unwrap();
+        assert!(parsed.environments.contains_key("dev"));
+        assert_eq!(parsed.game_passes[0].id, Some(42));
+        assert_eq!(parsed.game_passes[0].ids.get("dev"), Some(&99));
+
+        let lobby = parsed
+            .places
+            .iter()
+            .find(|p| p.place_id == Some(888))
+            .unwrap();
+        assert_eq!(lobby.name.as_deref(), Some("Lobby"));
+        assert_eq!(lobby.description, None);
+        assert_eq!(lobby.server_size, Some(12));
+        assert_eq!(lobby.ids.get("dev"), Some(&98));
+        assert_eq!(lobby.file_path, "lobby.rbxl");
+
+        // The root's name and description stay in `universe:` only.
+        let root = parsed
+            .places
+            .iter()
+            .find(|p| p.place_id == Some(777))
+            .unwrap();
+        assert_eq!(root.name, None);
+        assert_eq!(root.description, None);
+        assert_eq!(root.server_size, Some(50));
+        assert_eq!(parsed.universe.name.as_deref(), Some("Imported Game"));
+        validate(&parsed).unwrap();
     }
 }

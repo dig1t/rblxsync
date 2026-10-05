@@ -100,6 +100,7 @@ SHA-256 hashes. Top-level keys: `universe`, `game_passes`, `developer_products`,
   change-detection works (only re-uploads when the hash differs).
 - **Never hand-edit it**; overwritten on the next sync. A missing file is treated
   as empty default state (so the next sync will try to create everything fresh).
+- Each environment has its own, `rblxsync-lock.<env>.yml`, next to the config.
 
 ## Idempotency & renames
 
@@ -108,9 +109,21 @@ SHA-256 hashes. Top-level keys: `universe`, `game_passes`, `developer_products`,
 - Matching is **id-first**. An entry with an `id:` is matched by that id and its
   `name:` is just a label, so renaming it is safe (the PATCH renames the Roblox
   resource). An entry without an `id:` matches by name, case-insensitive.
-- On create, `run` writes the new `id:` back into `rblxsync.yml` immediately (a
-  surgical line insert that preserves comments, not a batched rewrite), so after
-  the first run every entry normally has one.
+- On create or name match, `run` writes the `id:` back into `rblxsync.yml`
+  immediately (a surgical line insert that preserves comments, not a batched
+  rewrite), so after the first run every entry normally has one. With `--env`
+  it writes `ids: { <env>: <id> }` instead.
+
+## Dev and live ids in game code
+
+With `environments:`, each universe has its own ids. Two ways to consume them:
+
+- **One file per copy:** give the environment its own `output_path` (e.g.
+  `ConfigDev.luau`) and pick the module by `game.GameId` at runtime. Studio
+  usually wants the dev one.
+- **One file, synced per build:** leave `output_path` shared and run
+  `rblxsync run --env <name>` in the build that uploads that copy, so the
+  generated module always holds the ids of the universe it ships to.
 - The duplicate hazard only remains for an entry with no `id:` yet: renaming it
   makes rblxsync see an unknown name and **create a new resource**, leaving the
   old one behind. Before renaming such an entry, make sure it has its `id:`

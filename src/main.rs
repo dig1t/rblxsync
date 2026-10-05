@@ -17,6 +17,11 @@ struct Cli {
     /// Path to config file
     #[arg(short, long, global = true, default_value = "rblxsync.yml")]
     config: String,
+
+    /// Environment from the config's `environments:` to sync (a dev or test
+    /// universe). Leave it out for the top-level universe.
+    #[arg(short, long, global = true)]
+    env: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -85,14 +90,16 @@ async fn main() -> anyhow::Result<()> {
         match RblxSyncConfig::load(path) {
             Ok(config) => {
                 // Run additional validation checks
-                if let Err(e) = commands::validate(&config) {
-                    error!("Config validation failed: {}", e);
+                let checked = commands::validate(&config)
+                    .and_then(|_| config.resolve(args.env.as_deref()).map(|_| ()));
+                if let Err(e) = checked {
+                    error!("Config validation failed: {:#}", e);
                     std::process::exit(1);
                 }
                 info!("Config file is valid.");
             }
             Err(e) => {
-                error!("Config validation failed: {}", e);
+                error!("Config validation failed: {:#}", e);
                 std::process::exit(1);
             }
         }
@@ -120,9 +127,9 @@ async fn main() -> anyhow::Result<()> {
                 info!("Dry-run mode enabled.");
             }
             let config_path = Path::new(&args.config);
-            let config = RblxSyncConfig::load(config_path)?;
+            let config = RblxSyncConfig::load(config_path)?.resolve(args.env.as_deref())?;
             let root = config_path.parent().unwrap_or(Path::new("."));
-            let state = SyncState::load(root)?;
+            let state = SyncState::load(root, config.env.as_deref())?;
 
             // Check if universe settings are defined and require ROBLOX_COOKIE
             let cookie_client = if config.universe.has_settings() {
@@ -136,6 +143,12 @@ async fn main() -> anyhow::Result<()> {
                             "Universe settings are defined in {} but ROBLOX_COOKIE is not set.",
                             args.config
                         );
+                        if let Some(env) = &config.env {
+                            error!(
+                                "Environment '{}' inherits the top-level `universe:` settings. Set any it shouldn't change to null under environments.{}.universe.",
+                                env, env
+                            );
+                        }
                         error!("");
                         error!("To update universe settings (name, description, etc.), you must provide your");
                         error!(".ROBLOSECURITY cookie. Add the following to your .env file:");
@@ -167,11 +180,13 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Commands::Publish => {
-            let config = RblxSyncConfig::load(Path::new(&args.config))?;
+            let config =
+                RblxSyncConfig::load(Path::new(&args.config))?.resolve(args.env.as_deref())?;
             commands::publish(config, client).await?;
         }
         Commands::Export { output, lua } => {
-            let config = RblxSyncConfig::load(Path::new(&args.config))?;
+            let config =
+                RblxSyncConfig::load(Path::new(&args.config))?.resolve(args.env.as_deref())?;
             commands::export(config, client, output, lua).await?;
         }
         Commands::Import {
@@ -179,6 +194,19 @@ async fn main() -> anyhow::Result<()> {
             place_id,
             badge_id,
         } => {
+            if let Some(env) = &args.env {
+                // ponytail: import rewrites the shared entries from one
+                // universe, so an environment's values would overwrite every
+                // other's, and `run --env` already adopts by name. An import
+                // that only fills `ids.<env>` is the upgrade if adopting through
+                // `run` (which also patches each item) proves too heavy.
+                error!("import pulls the top-level universe only: an environment's names and prices would overwrite the entries every environment shares.");
+                error!(
+                    "To link environment '{}' to items it already has, run `rblxsync run --env {} --dry-run`, then without --dry-run: it finds them by name, updates them to match the config, and writes each id into `ids: {{ {}: ... }}`. Place ids go in by hand.",
+                    env, env, env
+                );
+                std::process::exit(1);
+            }
             commands::import(
                 client,
                 Path::new(&args.config),

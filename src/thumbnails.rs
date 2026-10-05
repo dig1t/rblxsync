@@ -90,6 +90,8 @@ pub struct ThumbnailPlan {
     universe_id: u64,
     assets_dir: PathBuf,
     dry_run: bool,
+    /// The run's environment, whose lock file each change is saved to.
+    env: Option<String>,
     game_page: Option<GamePagePlan>,
     home_page: Option<HomePagePlan>,
 }
@@ -185,6 +187,7 @@ pub async fn plan(
         universe_id,
         assets_dir,
         dry_run,
+        env: config.env.clone(),
         game_page,
         home_page,
     })
@@ -298,7 +301,7 @@ impl ThumbnailPlan {
             }
             if !dry_run {
                 state.thumbnails.game_page.retain(|t| t.id != old.id);
-                state.save(lock_dir)?;
+                state.save(lock_dir, self.env.as_deref())?;
             }
         }
 
@@ -331,7 +334,7 @@ impl ThumbnailPlan {
                 id,
                 hash: slot.hash.clone(),
             });
-            state.save(lock_dir)?;
+            state.save(lock_dir, self.env.as_deref())?;
         }
 
         for slot in &slots {
@@ -482,7 +485,7 @@ impl ThumbnailPlan {
                 id: done.id.clone(),
                 hash: slot.hash.clone(),
             });
-            state.save(lock_dir)?;
+            state.save(lock_dir, self.env.as_deref())?;
             slot.id = Some(done.id.clone());
             status.insert(done.id.clone(), done);
         }
@@ -597,7 +600,7 @@ impl ThumbnailPlan {
                 })
                 .chain(stale.iter().filter(|t| failed.contains(&t.id)).cloned())
                 .collect();
-            state.save(lock_dir)?;
+            state.save(lock_dir, self.env.as_deref())?;
         }
 
         info!(
@@ -858,7 +861,7 @@ mod tests {
             state.thumbnails.game_page,
             vec![lock("a.png", 11, "a-png"), lock("b.png", 22, "b-png")]
         );
-        let saved = SyncState::load(dir.path()).unwrap();
+        let saved = SyncState::load(dir.path(), None).unwrap();
         assert_eq!(saved.thumbnails.game_page.len(), 2);
     }
 
