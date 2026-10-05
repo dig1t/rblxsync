@@ -1,6 +1,7 @@
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use log::{error, info};
-use rblxsync::api::{RobloxClient, RobloxCookieClient};
+use rblxsync::api::RobloxClient;
 use rblxsync::commands;
 use rblxsync::config::{Config, RblxSyncConfig};
 use rblxsync::state::SyncState;
@@ -89,9 +90,20 @@ async fn main() -> anyhow::Result<()> {
         }
         match RblxSyncConfig::load(path) {
             Ok(config) => {
-                // Run additional validation checks
-                let checked = commands::validate(&config)
-                    .and_then(|_| config.resolve(args.env.as_deref()).map(|_| ()));
+                // The top level, then each environment as it resolves (only
+                // --env's when given): an override can break what the top
+                // level gets right.
+                let envs: Vec<String> = match &args.env {
+                    Some(env) => vec![env.clone()],
+                    None => config.environments.keys().cloned().collect(),
+                };
+                let checked = commands::validate(&config).and_then(|_| {
+                    envs.iter().try_for_each(|env| {
+                        let resolved = config.clone().resolve(Some(env))?;
+                        commands::validate(&resolved)
+                            .with_context(|| format!("environments.{}", env))
+                    })
+                });
                 if let Err(e) = checked {
                     error!("Config validation failed: {:#}", e);
                     std::process::exit(1);
@@ -131,48 +143,10 @@ async fn main() -> anyhow::Result<()> {
             let root = config_path.parent().unwrap_or(Path::new("."));
             let state = SyncState::load(root, config.env.as_deref())?;
 
-            // Check if universe settings are defined and require ROBLOX_COOKIE
-            let cookie_client = if config.universe.has_settings() {
-                match &env_config.roblox_cookie {
-                    Some(cookie) => {
-                        info!("Universe settings detected, using cookie authentication for develop.roblox.com API");
-                        Some(RobloxCookieClient::new(cookie.clone()))
-                    }
-                    None => {
-                        error!(
-                            "Universe settings are defined in {} but ROBLOX_COOKIE is not set.",
-                            args.config
-                        );
-                        if let Some(env) = &config.env {
-                            error!(
-                                "Environment '{}' inherits the top-level `universe:` settings. Set any it shouldn't change to null under environments.{}.universe.",
-                                env, env
-                            );
-                        }
-                        error!("");
-                        error!("To update universe settings (name, description, etc.), you must provide your");
-                        error!(".ROBLOSECURITY cookie. Add the following to your .env file:");
-                        error!("");
-                        error!("  ROBLOX_COOKIE=your_.ROBLOSECURITY_cookie_value_here");
-                        error!("");
-                        error!("To get your .ROBLOSECURITY cookie:");
-                        error!("  1. Log into roblox.com in your browser");
-                        error!("  2. Open Developer Tools (F12) > Application > Cookies");
-                        error!("  3. Copy the value of .ROBLOSECURITY");
-                        error!("");
-                        error!("WARNING: Keep this cookie secret! Anyone with it can access your account.");
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                None
-            };
-
             commands::run(
                 config,
                 state,
                 client,
-                cookie_client,
                 dry_run,
                 allow_paid_badges,
                 config_path,

@@ -61,7 +61,7 @@ An API key is a password that lets rblxsync talk to Roblox for you.
 
 1. Go to [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials)
 2. Click **Create API Key**
-3. Give it access to your experience, and turn on read + write for **Game Passes**, **Developer Products**, **Badges**, **Assets**, and **Places**. Syncing thumbnails also needs `legacy-universe:manage` (game page) and `universe.thumbnail:read` + `universe.thumbnail:write` (home page)
+3. Give it access to your experience and add these API systems: `game-pass` (read, write), `developer-product` (read, write), `legacy-universe.badge` (write, manage-and-spend-robux), `legacy-badge` (manage), `universe` (write), `universe.place` (write), and `universe-places` (write). Home page thumbnails also need `universe.thumbnail` (read, write)
 4. Under IP access, put `0.0.0.0/0` if you're not sure what your IP is
 5. Save it and copy the key
 
@@ -76,9 +76,3 @@ ROBLOX_API_KEY=paste_your_key_here
 Then add `.env` to your `.gitignore`.
 
 **Never** put this key on GitHub. Anyone who has it can change your game.
-
-If you plan to change universe settings (name, description, devices, private server price), you need one more line. See [gotchas](/gotchas#universe-settings-need-a-cookie) for why.
-
-```bash
-ROBLOX_COOKIE=your_roblosecurity_cookie
-```

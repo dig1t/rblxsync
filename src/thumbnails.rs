@@ -21,6 +21,14 @@ const HOME_PAGE_MAX: usize = 5;
 
 /// Checks that need no files or network.
 pub fn validate(thumbnails: &ThumbnailsConfig) -> Result<()> {
+    // The game page endpoints an API key reaches are Roblox's localization
+    // API: they manage translated sets and refuse the source language (code
+    // 26), whose set is the carousel every player without a translation sees.
+    if !thumbnails.game_page.is_empty() {
+        return Err(anyhow!(
+            "thumbnails.game_page can't be synced: an API key can only change translated game page thumbnails, not the set everyone sees. Upload those images in the Creator Hub and remove thumbnails.game_page"
+        ));
+    }
     if thumbnails.game_page.len() > GAME_PAGE_MAX {
         return Err(anyhow!(
             "thumbnails.game_page lists {} images; a game page shows at most {}",
@@ -780,13 +788,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_caps_counts_and_keeps_alt_text_on_the_game_page() {
+    fn validate_refuses_the_game_page_and_caps_the_home_page() {
         let dir = assets(&[]);
-        let eleven = "  game_page:\n".to_string() + &"    - image: a.png\n".repeat(11);
-        let msg = validate(&config(dir.path(), &eleven).thumbnails)
+        let one = "  game_page:\n    - image: a.png\n";
+        let msg = validate(&config(dir.path(), one).thumbnails)
             .unwrap_err()
             .to_string();
-        assert!(msg.contains("at most 10"), "msg: {}", msg);
+        assert!(msg.contains("game_page can't be synced"), "msg: {}", msg);
 
         let six = "  home_page:\n".to_string() + &"    - image: a.png\n".repeat(6);
         let msg = validate(&config(dir.path(), &six).thumbnails)

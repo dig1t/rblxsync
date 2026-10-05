@@ -13,20 +13,13 @@ badge_payment_source: "user"
 # Point this at a Rojo-synced path so game code can require it.
 output_path: "src/shared/Config.luau"
 
-# Asset creation context for uploaded icons. Required only when uploading icons.
-creator:
-  id: "12345678"   # User ID or Group ID, as a string (quote it)
-  type: "user"     # "user" or "group"
-
 universe:
   id: 123456789                                  # Universe ID (required), NOT a place ID
-  # --- Everything below triggers the ROBLOX_COOKIE requirement on `run`. ---
-  # If you only want `id`, delete the rest to avoid needing a cookie.
-  name: "My Awesome Game"                        # synced (cookie)
-  description: "Updated via rblxsync!"           # synced (cookie)
-  genre: "adventure"                             # LOCAL-ONLY: never sent to Roblox
+  # Genre is not synced: set it in the Creator Hub (changeable once every 3 months).
+  name: "My Awesome Game"                        # root place's name
+  description: "Updated via rblxsync!"           # root place's description
   playable_devices: ["computer", "phone", "tablet"]  # computer | phone | tablet | console | vr
-  max_players: 50                                # LOCAL-ONLY: never PATCHed (per-place setting)
+  max_players: 50                                # root place's server size
   private_server_cost: "disabled"               # "disabled" | 0 (free) | 100 (Robux)
 
 game_passes:
@@ -67,16 +60,13 @@ environments:
   dev:
     universe:
       id: 987654321                 # REQUIRED, must differ from the top level
-      name: null                    # don't rename the dev copy (avoids the cookie too, with description: null)
+      name: null                    # don't rename the dev copy
     output_path: "src/shared/ConfigDev.luau"  # omit to write the same file (sync-per-build setups)
     name_prefix: "[dev] "           # prefixes the experience + place names in this copy, never item names
 
 # A missing or empty list leaves that set alone on Roblox.
+# game_page isn't supported: an API key can only change translated game page sets.
 thumbnails:
-  game_page:                        # experience page carousel: up to 10, shown in this order
-    - image: "thumbnails/lobby.png" # relative to assets_dir; re-uploaded only when the file changes
-      alt_text: "Players gathered in the lobby before a round"   # synced when set
-    - image: "thumbnails/arena.png"
   home_page:                        # home page tiles: up to 5; 2+ turn on personalization (no alt_text)
-    - image: "thumbnails/home_a.png"
+    - image: "thumbnails/home_a.png" # relative to assets_dir; re-uploaded only when the file changes
     - image: "thumbnails/home_b.png"

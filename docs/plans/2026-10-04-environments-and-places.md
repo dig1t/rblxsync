@@ -61,8 +61,11 @@ Subplaces had no settings at all: `places:` only published files, and
       (name match in the dev universe, place SKIP/UPDATE/no-id skip) and
       `import` of a dev universe (subplace names, server sizes)
 - [x] Merged with thumbnails in the main checkout
-- [ ] Not verified live: an actual place PATCH (no write was sent to a real
-      game). The request shape is covered by a mock test.
+- [x] Live `run --env` against a throwaway experience: name matches, `ids`
+      write-back (flow map, next to an existing `id:`), its own lock file and
+      output, then a no-op rerun
+- [ ] Not verified live: an actual place PATCH. The test key lacks
+      `universe.place:write`; the request shape is covered by a mock test.
 - [ ] Release, then fold games that keep a second config into one (below)
 
 ## Folding a second config into one (after a release)

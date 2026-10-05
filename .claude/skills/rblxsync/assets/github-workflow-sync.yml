@@ -2,7 +2,6 @@
 #
 # Prerequisites (repo Settings -> Secrets and variables -> Actions):
 #   - ROBLOX_API_KEY  (required)
-#   - ROBLOX_COOKIE   (only if rblxsync.yml sets universe settings)
 #
 # Pin the action to a published ref. v0.2.3 is the latest tag; a moving @v1 tag
 # does NOT exist yet. Do not use @v1 until it's published. @main works but is
@@ -33,7 +32,6 @@ jobs:
         uses: dig1t/rblxsync@v0.2.3
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
-          roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
           command: run
           args: --dry-run
 
@@ -41,6 +39,5 @@ jobs:
         uses: dig1t/rblxsync@v0.2.3
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
-          roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
           command: run
           config: rblxsync.yml

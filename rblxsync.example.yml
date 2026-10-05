@@ -3,15 +3,11 @@
 
 universe:
   id: 123456789 # required: find it in your Creator Hub URL, or run print(game.GameId) in Studio
-  name: "My Awesome Game"
+  name: "My Awesome Game" # name, description and max_players go on the starting place
   description: "Updated via rblxsync!"
-  genre: "adventure" # saved locally only, never sent to Roblox
   playable_devices: ["computer", "phone", "tablet"] # computer, phone, tablet, console, vr
-  max_players: 50 # saved locally only, never sent to Roblox
+  max_players: 50
   private_server_cost: "disabled" # "disabled" to turn them off, 0 for free, or a Robux price
-
-# Heads up: setting anything above besides id means you also need
-# ROBLOX_COOKIE in your .env file. See the docs for why.
 
 game_passes:
   - name: "VIP Pass"
@@ -38,6 +34,7 @@ places:
     file_path: "places/start_place.rbxl"
     publish: true # only places set to true get published
   - place_id: 1234567891
+    ids: { dev: 1234567893 } # this place in the dev copy below
     name: "Arena" # the root place's name is the game's, so set that one in universe: instead
     server_size: 12 # most players in one server
 
@@ -54,10 +51,6 @@ environments:
     name_prefix: "[dev] " # "Arena" is "[dev] Arena" in the dev copy
 
 thumbnails:
-  game_page: # the top of your game's page, up to 10, in this order
-    - image: "thumbnails/lobby.png"
-      alt_text: "Players gathered in the lobby before a round"
-    - image: "thumbnails/arena.png"
   home_page: # home page tiles, up to 5; two or more turn on personalization
     - image: "thumbnails/home_a.png"
     - image: "thumbnails/home_b.png"
@@ -71,8 +64,3 @@ badge_payment_source: "user"
 # rblxsync writes every ID into this file after each run, so your
 # game code can require it instead of hardcoding numbers
 output_path: "src/shared/Config.luau"
-
-# creator is only needed if you upload icons
-creator:
-  id: "12345678" # your user ID or group ID
-  type: "user" # "user" or "group"

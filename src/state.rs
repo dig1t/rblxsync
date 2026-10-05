@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,13 +11,13 @@ pub struct SyncState {
     pub universe: Option<UniverseState>,
     /// Game passes keyed by their Roblox ID
     #[serde(default)]
-    pub game_passes: HashMap<u64, ResourceState>,
+    pub game_passes: BTreeMap<u64, ResourceState>,
     /// Developer products keyed by their Roblox ID
     #[serde(default)]
-    pub developer_products: HashMap<u64, ResourceState>,
+    pub developer_products: BTreeMap<u64, ResourceState>,
     /// Badges keyed by their Roblox ID
     #[serde(default)]
-    pub badges: HashMap<u64, ResourceState>,
+    pub badges: BTreeMap<u64, ResourceState>,
     /// Thumbnails rblxsync uploaded
     #[serde(default, skip_serializing_if = "ThumbnailsState::is_empty")]
     pub thumbnails: ThumbnailsState,
@@ -53,8 +53,6 @@ pub struct UniverseState {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub genre: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playable_devices: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -214,7 +212,6 @@ impl SyncState {
         &mut self,
         name: Option<String>,
         description: Option<String>,
-        genre: Option<String>,
         playable_devices: Option<Vec<String>>,
         max_players: Option<u32>,
         private_server_cost: Option<String>,
@@ -222,7 +219,6 @@ impl SyncState {
         self.universe = Some(UniverseState {
             name,
             description,
-            genre,
             playable_devices,
             max_players,
             private_server_cost,
@@ -252,7 +248,6 @@ mod tests {
         state.update_universe(
             Some("Game".to_string()),
             Some("Desc".to_string()),
-            None,
             Some(vec!["computer".to_string()]),
             Some(30),
             Some("disabled".to_string()),
@@ -335,8 +330,8 @@ mod tests {
     #[test]
     fn test_update_universe_replaces() {
         let mut state = SyncState::default();
-        state.update_universe(Some("A".to_string()), None, None, None, None, None);
-        state.update_universe(Some("B".to_string()), None, None, None, None, None);
+        state.update_universe(Some("A".to_string()), None, None, None, None);
+        state.update_universe(Some("B".to_string()), None, None, None, None);
         assert_eq!(state.universe.as_ref().unwrap().name.as_deref(), Some("B"));
     }
 }

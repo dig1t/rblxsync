@@ -5,7 +5,7 @@ the tool that keeps your Roblox game passes, developer products, badges, and
 thumbnails in a text file and syncs them to Roblox with one command.
 
 With the skill installed, you can ask Claude things like "add a 200 Robux VIP
-pass" or "why is rblxsync asking me for a cookie" and it already knows the rules,
+pass" or "why did rblxsync stop before changing my badges" and it already knows the rules,
 the config format, and which mistakes cost you Robux.
 
 ## Install

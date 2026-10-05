@@ -300,13 +300,25 @@ impl RobloxClient {
         let url = self.personalization_url(universe_id, "thumbnails/uploads/status");
         let mut last = Value::Null;
         for _ in 0..30 {
-            last = self
+            let status = self
                 .send_json(|| {
                     self.request(Method::GET, &url)
                         .query(&[("operationIds", operation_id)])
                 })
-                .await
-                .context("Failed to read the home page upload status")?;
+                .await;
+            // The upload already exists on Roblox, so one failed read doesn't
+            // give up on it (giving up leaves it untracked).
+            match status {
+                Ok(status) => last = status,
+                Err(e) => {
+                    log::warn!(
+                        "Reading the home page upload status failed, trying again: {:#}",
+                        e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            }
             // The dict only holds finished operations. `uploadStatus` is an
             // undocumented 1/2 enum, so it isn't read.
             let done = &last["uploadThumbnailStatusDict"][operation_id];
@@ -320,7 +332,7 @@ impl RobloxClient {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
         Err(anyhow!(
-            "Home page upload {} didn't finish within a minute. Last status: {}",
+            "Home page upload {} didn't finish within a minute. Roblox may still finish it, so check the experience's home page thumbnails in the Creator Hub before running again. Last status: {}",
             operation_id,
             last
         ))

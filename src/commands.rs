@@ -1,4 +1,4 @@
-use crate::api::{RobloxClient, RobloxCookieClient};
+use crate::api::RobloxClient;
 use crate::config::{
     check_environment, BadgeConfig, DeveloperProductConfig, GamePassConfig, PlaceConfig,
     PrivateServerCost, RblxSyncConfig, UniverseConfig,
@@ -6,10 +6,10 @@ use crate::config::{
 use crate::output;
 use crate::state::{ResourceState, SyncState, UniverseState};
 use crate::yml_edit;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use log::{error, info, warn};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Robux Roblox charges for a badge once the universe's free daily quota is
@@ -57,6 +57,21 @@ pub fn validate(config: &RblxSyncConfig) -> Result<()> {
     // Check for duplicate badge names (case-insensitive)
     let badge_names: Vec<&str> = config.badges.iter().map(|b| b.name.as_str()).collect();
     check_for_duplicates(&badge_names, "badge")?;
+
+    // Roblox refuses a price below 1, even on a pass that isn't for sale, and
+    // would stop the run partway.
+    if let Some(pass) = config.game_passes.iter().find(|p| p.price == Some(0)) {
+        return Err(anyhow!(
+            "Game pass '{}': price must be at least 1. Leave `price` out for a pass that isn't for sale",
+            pass.name
+        ));
+    }
+    if let Some(product) = config.developer_products.iter().find(|p| p.price == 0) {
+        return Err(anyhow!(
+            "Developer product '{}': price must be at least 1",
+            product.name
+        ));
+    }
 
     // Every environment names its own universe. Checked on the top level only:
     // a resolved config's `universe` is already its environment's, and
@@ -115,6 +130,30 @@ pub fn validate(config: &RblxSyncConfig) -> Result<()> {
         }
     }
 
+    if config.creator.is_some() {
+        warn!("creator is no longer used: icons go up with the pass or product itself. Remove it from the config");
+    }
+    if config.universe.genre.is_some() {
+        warn!("universe.genre is no longer synced: Roblox allows a genre change only once every 3 months, so set it in the Creator Hub. Remove it from the config");
+    }
+    if let Some(devices) = &config.universe.playable_devices {
+        if devices.is_empty() {
+            return Err(anyhow!(
+                "universe.playable_devices: list at least one device, or leave it out"
+            ));
+        }
+        if let Some(bad) = devices.iter().find(|d| {
+            !DEVICE_FIELDS
+                .iter()
+                .any(|(device, _)| d.eq_ignore_ascii_case(device))
+        }) {
+            return Err(anyhow!(
+                "universe.playable_devices: unknown device '{}'. Use computer, phone, tablet, console or vr",
+                bad
+            ));
+        }
+    }
+
     crate::thumbnails::validate(&config.thumbnails)
 }
 
@@ -144,8 +183,7 @@ fn remote_name_set(
 
 /// Read-only preflight run before any mutation. Validates everything knowable up
 /// front so a destructive `run` never half-applies: referenced icon files must
-/// exist, icons on passes/products need a `creator`, and a badge that would be
-/// CREATED needs an icon (Roblox rejects creation without one), a payment
+/// exist, and a badge that would be CREATED needs an icon (Roblox rejects creation without one), a payment
 /// source, and a free slot in today's badge quota unless paid badges are
 /// allowed. Aborts listing every problem; makes no changes. Returns the badge
 /// budget `sync_badges` creates against.
@@ -160,8 +198,7 @@ async fn preflight(
     let assets_dir = Path::new(&config.assets_dir);
     let mut errors: Vec<String> = Vec::new();
 
-    // Passes / products: a referenced icon file must exist, and uploading any
-    // icon needs a configured creator.
+    // Passes / products: a referenced icon file must exist.
     for p in &config.game_passes {
         if let Some(icon) = &p.icon {
             let path = assets_dir.join(icon);
@@ -170,11 +207,6 @@ async fn preflight(
                     "Game pass '{}': icon file not found at {}",
                     p.name,
                     path.display()
-                ));
-            } else if config.creator.is_none() {
-                errors.push(format!(
-                    "Game pass '{}': has an icon but no `creator:` is configured (required to upload assets)",
-                    p.name
                 ));
             }
         }
@@ -187,11 +219,6 @@ async fn preflight(
                     "Developer product '{}': icon file not found at {}",
                     p.name,
                     path.display()
-                ));
-            } else if config.creator.is_none() {
-                errors.push(format!(
-                    "Developer product '{}': has an icon but no `creator:` is configured (required to upload assets)",
-                    p.name
                 ));
             }
         }
@@ -283,8 +310,8 @@ async fn preflight(
         }
     }
 
-    // The root place's name and description are the experience's. Set both
-    // here and in `universe:`, and the two syncs would undo each other.
+    // `universe:` sets its name, description and max players on the root
+    // place. Set one in both, and the two syncs would undo each other.
     let root_clash = |p: &PlaceConfig| -> Vec<&str> {
         let mut fields = Vec::new();
         if p.name.is_some() && config.universe.name.is_some() {
@@ -292,6 +319,9 @@ async fn preflight(
         }
         if p.description.is_some() && config.universe.description.is_some() {
             fields.push("description");
+        }
+        if p.server_size.is_some() && config.universe.max_players.is_some() {
+            fields.push("server size");
         }
         fields
     };
@@ -348,7 +378,6 @@ pub async fn run(
     config: RblxSyncConfig,
     mut state: SyncState,
     client: RobloxClient,
-    cookie_client: Option<RobloxCookieClient>,
     dry_run: bool,
     allow_paid_badges: bool,
     config_path: &Path,
@@ -380,67 +409,78 @@ pub async fn run(
     .await?;
     let thumbnail_plan = crate::thumbnails::plan(&config, &state, &client, dry_run).await?;
 
-    // Update Universe Settings (requires cookie client)
-    if config.universe.has_settings() {
-        if let Some(ref cookie_client) = cookie_client {
-            sync_universe_settings(universe_id, &config, &mut state, cookie_client, dry_run)
-                .await?;
-        }
-    }
-
-    // 2. Sync Resources. Each sync writes a newly-created resource's id back
-    // into the yml *immediately* (see write_back_id), so a created resource's
-    // identity is durable even if a later step fails or the lock file is never
-    // written — the next run then matches by id and never makes a duplicate.
-    sync_game_passes(
-        universe_id,
-        &config,
-        &mut state,
-        &client,
-        dry_run,
-        config_path,
-    )
-    .await?;
-    sync_developer_products(
-        universe_id,
-        &config,
-        &mut state,
-        &client,
-        dry_run,
-        config_path,
-    )
-    .await?;
-    sync_badges(
-        universe_id,
-        &config,
-        &mut state,
-        &client,
-        dry_run,
-        config_path,
-        badge_budget,
-    )
-    .await?;
-    sync_places(universe_id, &config, &client, dry_run).await?;
-    thumbnail_plan
-        .apply(&mut state, &client, lock_root(config_path))
+    // Each sync writes a new resource's id into the yml the moment it exists
+    // (see write_back_id) and saves the lock file after every change, so a
+    // step that fails keeps everything before it, and the next run matches by
+    // id instead of making a duplicate.
+    // Settings go after the items: Roblox refuses a place update while the
+    // place is open in Team Create, and that shouldn't hold up a new product.
+    let synced = async {
+        sync_game_passes(
+            universe_id,
+            &config,
+            &mut state,
+            &client,
+            dry_run,
+            config_path,
+        )
         .await?;
-
-    // Save state next to the config (where it is also loaded from), so a
-    // `--config sub/x.yml` keeps the lock file beside it. Atomic via state.save.
-    if !dry_run {
-        state.save(lock_root(config_path), config.env.as_deref())?;
-    } else {
-        info!("Dry Run: Would save state.");
-    }
-
-    // Generate output config file if output_path is specified
-    if let Some(output_path) = &config.output_path {
-        if dry_run {
-            info!("Dry Run: Would generate config file at {}", output_path);
-        } else {
-            output::generate_config(&state, config.universe.id, output_path)?;
+        sync_developer_products(
+            universe_id,
+            &config,
+            &mut state,
+            &client,
+            dry_run,
+            config_path,
+        )
+        .await?;
+        sync_badges(
+            universe_id,
+            &config,
+            &mut state,
+            &client,
+            dry_run,
+            config_path,
+            badge_budget,
+        )
+        .await?;
+        if config.universe.has_settings() {
+            sync_universe_settings(universe_id, &config, &mut state, &client, dry_run).await?;
         }
+        sync_places(universe_id, &config, &client, dry_run).await?;
+        thumbnail_plan
+            .apply(&mut state, &client, lock_root(config_path))
+            .await
     }
+    .await;
+
+    if dry_run {
+        info!("Dry Run: Would save state.");
+        if let Some(output_path) = &config.output_path {
+            info!("Dry Run: Would generate config file at {}", output_path);
+        }
+        synced?;
+        info!("Sync complete!");
+        return Ok(());
+    }
+
+    // Saved even when a step failed, so the lock file (next to the config,
+    // where it's loaded from) and the generated config hold every change that
+    // did go through.
+    let saved = state
+        .save(lock_root(config_path), config.env.as_deref())
+        .and_then(|()| match &config.output_path {
+            Some(output_path) => output::generate_config(&state, universe_id, output_path),
+            None => Ok(()),
+        });
+    if let Err(e) = synced {
+        match saved {
+            Ok(()) => warn!("Sync stopped partway. Everything it changed before the error below is saved, so run again to finish."),
+            Err(save_err) => error!("Sync stopped partway, and saving its progress failed too: {:#}", save_err),
+        }
+        return Err(e);
+    }
+    saved?;
 
     info!("Sync complete!");
     Ok(())
@@ -449,6 +489,8 @@ pub async fn run(
 pub async fn publish(config: RblxSyncConfig, client: RobloxClient) -> Result<()> {
     let universe_id = config.universe.id;
 
+    // One place failing doesn't stop the others; the command fails at the end.
+    let mut failed: Vec<u64> = Vec::new();
     for place in &config.places {
         if place.publish {
             let Some(place_id) = place.place_id else {
@@ -463,13 +505,20 @@ pub async fn publish(config: RblxSyncConfig, client: RobloxClient) -> Result<()>
             let path = Path::new(&place.file_path);
             if !path.exists() {
                 error!("File not found: {}", place.file_path);
+                failed.push(place_id);
                 continue;
             }
             match client.publish_place(universe_id, place_id, path).await {
                 Ok(_) => info!("Published place {}", place_id),
-                Err(e) => error!("Failed to publish place {}: {}", place_id, e),
+                Err(e) => {
+                    error!("Failed to publish place {}: {:#}", place_id, e);
+                    failed.push(place_id);
+                }
             }
         }
+    }
+    if !failed.is_empty() {
+        bail!("{} place(s) failed to publish: {:?}", failed.len(), failed);
     }
     Ok(())
 }
@@ -518,10 +567,12 @@ fn write_back_id(
     let yaml = std::fs::read_to_string(config_path)
         .with_context(|| format!("Failed to read config for id write-back: {:?}", config_path))?;
 
+    // The edit is textual, so it's only saved if the file still loads.
     let updated = match env {
         Some(env) => yml_edit::insert_env_id(&yaml, section, name, env, id),
         None => yml_edit::insert_id(&yaml, section, name, id),
-    };
+    }
+    .filter(|text| serde_yaml::from_str::<RblxSyncConfig>(text).is_ok());
     match (updated, env) {
         (Some(updated), _) => crate::fsutil::atomic_write(config_path, updated.as_bytes())
             .context("Failed to write config after id write-back")?,
@@ -790,15 +841,46 @@ pub async fn import(
     }
 
     // --- Build merged config ---
+    // Settings the config already manages come from Roblox too, so the next
+    // run doesn't put back a value changed in the Creator Hub (a private
+    // server price change cancels every subscription). Unmanaged ones stay
+    // unmanaged. The root place's server size is the experience's max players.
     let existing_universe = existing_config.as_ref().map(|c| &c.universe);
+    let remote_devices: Vec<String> = DEVICE_FIELDS
+        .iter()
+        .filter(|(_, field)| remote_universe[*field].as_bool() == Some(true))
+        .map(|(device, _)| device.to_string())
+        .collect();
+    let remote_private_servers = match remote_universe["privateServerPriceRobux"].as_u64() {
+        None => Some(PrivateServerCost::Disabled),
+        Some(0) => Some(PrivateServerCost::Free),
+        Some(price) => u32::try_from(price).ok().map(PrivateServerCost::Paid),
+    };
+    let root_size = remote_places
+        .iter()
+        .find(|(id, _)| root_place_ids.contains(id))
+        .and_then(|(_, place)| place["serverSize"].as_u64())
+        .and_then(|size| u32::try_from(size).ok());
     let universe = UniverseConfig {
         id: universe_id,
         name: remote_name.clone(),
         description: remote_description.clone(),
-        genre: existing_universe.and_then(|u| u.genre.clone()),
-        playable_devices: existing_universe.and_then(|u| u.playable_devices.clone()),
-        max_players: existing_universe.and_then(|u| u.max_players),
-        private_server_cost: existing_universe.and_then(|u| u.private_server_cost.clone()),
+        genre: None,
+        playable_devices: existing_universe
+            .and_then(|u| u.playable_devices.clone())
+            .map(|local| {
+                if remote_devices.is_empty() {
+                    local
+                } else {
+                    remote_devices
+                }
+            }),
+        max_players: existing_universe
+            .and_then(|u| u.max_players)
+            .map(|local| root_size.unwrap_or(local)),
+        private_server_cost: existing_universe
+            .and_then(|u| u.private_server_cost.clone())
+            .map(|local| remote_private_servers.unwrap_or(local)),
     };
 
     // Game passes reconciliation.
@@ -920,9 +1002,11 @@ pub async fn import(
         };
         place.name = text("displayName");
         place.description = text("description");
+        // With `universe.max_players` set, that's where the root's size is.
         place.server_size = remote["serverSize"]
             .as_u64()
-            .and_then(|size| u32::try_from(size).ok());
+            .and_then(|size| u32::try_from(size).ok())
+            .filter(|_| subplace || universe.max_players.is_none());
     }
     if !remote_places.is_empty() {
         warn!("The API key auto-discovers only the root place. Re-run with `--place-id <id>` (repeatable) to import additional places, or add them to the `places:` section manually. Set each place's `file_path` to publish it.");
@@ -933,7 +1017,7 @@ pub async fn import(
             .as_ref()
             .map(|c| c.assets_dir.clone())
             .unwrap_or_else(|| "assets".to_string()),
-        creator: existing_config.as_ref().and_then(|c| c.creator.clone()),
+        creator: None,
         universe,
         environments: existing_config
             .as_ref()
@@ -961,14 +1045,13 @@ pub async fn import(
         thumbnails: existing_state.thumbnails.clone(),
         ..Default::default()
     };
-    let existing_universe_state = existing_state.universe.as_ref();
     merged_state.universe = Some(UniverseState {
         name: remote_name,
         description: remote_description,
-        genre: existing_universe_state.and_then(|u| u.genre.clone()),
-        playable_devices: existing_universe_state.and_then(|u| u.playable_devices.clone()),
-        max_players: existing_universe_state.and_then(|u| u.max_players),
-        private_server_cost: existing_universe_state.and_then(|u| u.private_server_cost.clone()),
+        playable_devices: merged_config.universe.playable_devices.clone(),
+        max_players: merged_config.universe.max_players,
+        private_server_cost: (merged_config.universe.private_server_cost.as_ref())
+            .map(private_server_state),
     });
 
     for r in &remote_passes {
@@ -1093,7 +1176,7 @@ fn local_matches(local_id: Option<u64>, local_name: &str, remote: &RemoteResourc
 /// Look up a kept local entry's existing state (by id if set, else by name) and
 /// return the (id, state) to carry into the rebuilt lock file.
 fn find_kept_state(
-    map: &HashMap<u64, ResourceState>,
+    map: &BTreeMap<u64, ResourceState>,
     local_id: Option<u64>,
     local_name: &str,
 ) -> Option<(u64, ResourceState)> {
@@ -1107,216 +1190,139 @@ fn find_kept_state(
         .map(|(id, s)| (*id, s.clone()))
 }
 
+/// Universe fields each `playable_devices` value turns on. A device left out
+/// of the list is turned off.
+const DEVICE_FIELDS: [(&str, &str); 5] = [
+    ("computer", "desktopEnabled"),
+    ("phone", "mobileEnabled"),
+    ("tablet", "tabletEnabled"),
+    ("console", "consoleEnabled"),
+    ("vr", "vrEnabled"),
+];
+
+/// How the lock file (and so `Config.luau`) records a private server cost.
+fn private_server_state(cost: &PrivateServerCost) -> String {
+    match cost {
+        PrivateServerCost::Disabled => "disabled".to_string(),
+        PrivateServerCost::Free => "0".to_string(),
+        PrivateServerCost::Paid(price) => price.to_string(),
+    }
+}
+
+/// Syncs `universe:` through Open Cloud with the API key. Devices and the
+/// private server price are universe fields; the name, description and max
+/// players are the root place's. Roblox is read first and only fields that
+/// differ are sent: a private server price change cancels every subscription.
 async fn sync_universe_settings(
     universe_id: u64,
     config: &RblxSyncConfig,
     state: &mut SyncState,
-    cookie_client: &RobloxCookieClient,
+    client: &RobloxClient,
     dry_run: bool,
 ) -> Result<()> {
     info!("Syncing Universe Settings...");
-
-    // Build the current desired state from config
-    // Convert private_server_cost to state string for comparison
-    let private_server_cost_state = config
-        .universe
-        .private_server_cost
-        .as_ref()
-        .map(|c| match c {
-            PrivateServerCost::Disabled => "disabled".to_string(),
-            PrivateServerCost::Free => "0".to_string(),
-            PrivateServerCost::Paid(cost) => cost.to_string(),
-        });
-
-    let desired_state = UniverseState {
-        name: config.universe.name.clone(),
-        description: config.universe.description.clone(),
-        genre: config.universe.genre.clone(),
-        playable_devices: config.universe.playable_devices.clone(),
-        max_players: config.universe.max_players,
-        private_server_cost: private_server_cost_state.clone(),
+    let universe = &config.universe;
+    let remote = match client.get_universe(universe_id).await {
+        Ok(remote) => remote,
+        Err(e) if dry_run => {
+            warn!(
+                "Dry Run: Failed to read universe {} (likely due to invalid credentials): {}",
+                universe_id, e
+            );
+            serde_json::Value::Null
+        }
+        Err(e) => return Err(e.context(format!("Failed to read universe {}", universe_id))),
     };
 
-    // Check for diffs against stored state
-    let stored_state = state.universe.as_ref();
-    let mut changes: Vec<&str> = Vec::new();
-
-    if stored_state.map(|s| &s.name) != Some(&desired_state.name) && desired_state.name.is_some() {
-        changes.push("name");
-    }
-    if stored_state.map(|s| &s.description) != Some(&desired_state.description)
-        && desired_state.description.is_some()
-    {
-        changes.push("description");
-    }
-    if stored_state.map(|s| &s.playable_devices) != Some(&desired_state.playable_devices)
-        && desired_state.playable_devices.is_some()
-    {
-        changes.push("playable_devices");
-    }
-    if stored_state.map(|s| &s.private_server_cost) != Some(&desired_state.private_server_cost)
-        && desired_state.private_server_cost.is_some()
-    {
-        changes.push("private_server_cost");
-    }
-
-    // genre and max_players are tracked locally only. They are not PATCHable via the
-    // develop.roblox.com configuration endpoint (genre is documented as not updatable via
-    // API; max_players is a per-place setting, not a universe configuration field), so they
-    // must never trigger a sync on their own. We still persist them in state below.
-    let stored_genre = stored_state.and_then(|s| s.genre.as_ref());
-    let stored_max_players = stored_state.and_then(|s| s.max_players);
-    let tracked_local_changed = (desired_state.genre.is_some()
-        && stored_genre != desired_state.genre.as_ref())
-        || (desired_state.max_players.is_some() && stored_max_players != desired_state.max_players);
-
-    // Snapshot stored values as owned so they can be used after `state` is mutably borrowed.
-    let stored_name = stored_state.and_then(|s| s.name.clone());
-    let stored_description = stored_state.and_then(|s| s.description.clone());
-    let stored_genre_owned = stored_state.and_then(|s| s.genre.clone());
-    let stored_playable_devices = stored_state.and_then(|s| s.playable_devices.clone());
-    let stored_max_players_owned = stored_state.and_then(|s| s.max_players);
-    let stored_private_server_cost = stored_state.and_then(|s| s.private_server_cost.clone());
-
-    let has_changes = !changes.is_empty();
-
-    if !has_changes {
-        info!("  [SKIP] Universe Settings - no API-updatable changes detected");
-        if tracked_local_changed && !dry_run {
-            info!("  [LOCAL] Universe genre/max_players are tracked locally only (not updatable via API) - recording in state");
-            state.update_universe(
-                stored_name.clone(),
-                stored_description.clone(),
-                desired_state
-                    .genre
-                    .clone()
-                    .or_else(|| stored_genre_owned.clone()),
-                stored_playable_devices.clone(),
-                desired_state.max_players.or(stored_max_players_owned),
-                stored_private_server_cost.clone(),
-            );
-        }
-        return Ok(());
-    }
-
-    // Build the request body for develop.roblox.com/v2/universes/{id}/configuration
-    let mut body = serde_json::Map::new();
-
-    // Add fields that are changing
-    if changes.contains(&"name") {
-        if let Some(name) = &desired_state.name {
-            body.insert("name".to_string(), name.clone().into());
-        }
-    }
-    if changes.contains(&"description") {
-        if let Some(desc) = &desired_state.description {
-            body.insert("description".to_string(), desc.clone().into());
-        }
-    }
-
-    // Map playable devices to numeric array (1=Computer, 2=Phone, 3=Tablet, 4=Console, 5=VR)
-    if changes.contains(&"playable_devices") {
-        if let Some(devices) = &desired_state.playable_devices {
-            let device_ids: Vec<u8> = devices
-                .iter()
-                .filter_map(|d| match d.to_lowercase().as_str() {
-                    "computer" => Some(1),
-                    "phone" => Some(2),
-                    "tablet" => Some(3),
-                    "console" => Some(4),
-                    "vr" => Some(5),
-                    _ => None,
-                })
-                .collect();
-            body.insert("playableDevices".to_string(), serde_json::json!(device_ids));
-        }
-    }
-
-    // Handle private server cost
-    if changes.contains(&"private_server_cost") {
-        if let Some(cost) = &config.universe.private_server_cost {
-            match cost {
-                PrivateServerCost::Disabled => {
-                    body.insert("allowPrivateServers".to_string(), serde_json::json!(false));
-                }
-                PrivateServerCost::Free => {
-                    body.insert("allowPrivateServers".to_string(), serde_json::json!(true));
-                    body.insert("privateServerPrice".to_string(), serde_json::json!(0));
-                }
-                PrivateServerCost::Paid(price) => {
-                    body.insert("allowPrivateServers".to_string(), serde_json::json!(true));
-                    body.insert("privateServerPrice".to_string(), serde_json::json!(price));
-                }
+    let mut fields = serde_json::Map::new();
+    if let Some(devices) = &universe.playable_devices {
+        for (device, field) in DEVICE_FIELDS {
+            let on = devices.iter().any(|d| d.eq_ignore_ascii_case(device));
+            if remote[field].as_bool() != Some(on) {
+                fields.insert(field.to_string(), on.into());
             }
         }
     }
+    if let Some(cost) = &universe.private_server_cost {
+        let price = match cost {
+            PrivateServerCost::Disabled => None,
+            PrivateServerCost::Free => Some(0),
+            PrivateServerCost::Paid(price) => Some(*price),
+        };
+        if remote["privateServerPriceRobux"].as_u64() != price.map(u64::from) {
+            fields.insert(
+                "privateServerPriceRobux".to_string(),
+                serde_json::json!(price),
+            );
+        }
+    }
 
-    if dry_run {
+    let changed = fields.keys().cloned().collect::<Vec<_>>().join(", ");
+    if fields.is_empty() {
+        info!("  [SKIP] Universe {} - no changes detected", universe_id);
+    } else if dry_run {
         info!(
-            "  [UPDATE] Universe Settings - would update: {}",
-            changes.join(", ")
-        );
-        info!(
-            "  Dry Run: Would PATCH to https://develop.roblox.com/v2/universes/{}/configuration",
-            universe_id
+            "  [UPDATE] Universe {} - would update: {}",
+            universe_id, changed
         );
     } else {
+        client
+            .update_universe(universe_id, &fields)
+            .await
+            .map_err(|e| {
+                let hint = if e.to_string().contains("403") {
+                    ": the API key needs the universe:write scope"
+                } else {
+                    ""
+                };
+                e.context(format!("Failed to update universe {}{}", universe_id, hint))
+            })?;
         info!(
-            "  Request URL: https://develop.roblox.com/v2/universes/{}/configuration",
-            universe_id
-        );
-        info!(
-            "  Request Body: {}",
-            serde_json::to_string_pretty(&serde_json::Value::Object(body.clone()))
-                .unwrap_or_default()
-        );
-        let response = cookie_client
-            .update_universe_configuration(universe_id, &serde_json::Value::Object(body))
-            .await?;
-
-        // Output raw response
-        info!(
-            "  Universe API Response: {}",
-            serde_json::to_string_pretty(&response).unwrap_or_else(|_| response.to_string())
-        );
-
-        // Update state after successful sync. Only persist fields that were actually applied
-        // (present in `changes`); for everything else, retain the previously stored value.
-        // genre and max_players are tracked locally only, so carry the desired value when set.
-        state.update_universe(
-            if changes.contains(&"name") {
-                desired_state.name.clone()
-            } else {
-                stored_name.clone()
-            },
-            if changes.contains(&"description") {
-                desired_state.description.clone()
-            } else {
-                stored_description.clone()
-            },
-            desired_state
-                .genre
-                .clone()
-                .or_else(|| stored_genre_owned.clone()),
-            if changes.contains(&"playable_devices") {
-                desired_state.playable_devices.clone()
-            } else {
-                stored_playable_devices.clone()
-            },
-            desired_state.max_players.or(stored_max_players_owned),
-            if changes.contains(&"private_server_cost") {
-                desired_state.private_server_cost.clone()
-            } else {
-                stored_private_server_cost.clone()
-            },
-        );
-
-        info!(
-            "  [UPDATED] Universe Settings - updated: {}",
-            changes.join(", ")
+            "  [UPDATED] Universe {} - updated: {}",
+            universe_id, changed
         );
     }
 
+    let root = PlaceConfig {
+        name: universe.name.clone(),
+        description: universe.description.clone(),
+        server_size: universe.max_players,
+        ..Default::default()
+    };
+    if root.has_settings() {
+        match remote["rootPlace"]
+            .as_str()
+            .and_then(|path| path.rsplit('/').next()?.parse::<u64>().ok())
+        {
+            Some(root_id) => {
+                let root = PlaceConfig {
+                    place_id: Some(root_id),
+                    ..root
+                };
+                sync_place(universe_id, root_id, &root, client, dry_run).await?;
+            }
+            None if dry_run => warn!(
+                "  [SKIP] Root place - unknown, so the experience's name, description and max players weren't checked"
+            ),
+            None => bail!(
+                "Universe {} has no root place, so its name, description and max players can't be set",
+                universe_id
+            ),
+        }
+    }
+
+    if !dry_run {
+        state.update_universe(
+            universe.name.clone(),
+            universe.description.clone(),
+            universe.playable_devices.clone(),
+            universe.max_players,
+            universe
+                .private_server_cost
+                .as_ref()
+                .map(private_server_state),
+        );
+    }
     Ok(())
 }
 
@@ -1424,25 +1430,14 @@ async fn sync_game_passes(
             let current_hash = calculate_file_hash(&icon_path).await?;
             let stored_hash = state_entry.and_then(|s| s.icon_hash.as_ref());
 
-            if stored_hash == Some(&current_hash)
-                && state_entry.and_then(|s| s.icon_asset_id).is_some()
-            {
+            if stored_hash == Some(&current_hash) {
                 asset_id = state_entry.and_then(|s| s.icon_asset_id);
                 icon_hash = Some(current_hash);
                 icon_changed = false;
-            } else if dry_run || is_new {
-                // Nothing to upload here: a dry run uploads nothing, and a new
-                // pass sends the file with its create request below.
-                icon_hash = Some(current_hash);
-                icon_changed = true;
-                changes.push("icon");
             } else {
-                let creator = config.creator.as_ref().ok_or_else(|| {
-                    anyhow!("Creator configuration is required for asset uploads")
-                })?;
-                let (aid, hash) = ensure_icon(client, &icon_path, state_entry, creator).await?;
-                asset_id = Some(aid);
-                icon_hash = Some(hash);
+                // Sent as a file with the create or update request below,
+                // which makes Roblox's own icon asset.
+                icon_hash = Some(current_hash);
                 icon_changed = true;
                 changes.push("icon");
             }
@@ -1464,11 +1459,14 @@ async fn sync_game_passes(
             created_count += 1;
             0
         } else {
+            // No price is no price: Roblox refuses `price: 0`.
             let mut body = serde_json::json!({
                 "name": pass.name,
                 "description": pass.description.clone().unwrap_or_default(),
-                "price": pass.price.unwrap_or(0),
             });
+            if let Some(price) = pass.price {
+                body["price"] = price.into();
+            }
             if let Some(for_sale) = new_pass_for_sale(pass) {
                 body["isForSale"] = for_sale.into();
             }
@@ -1477,7 +1475,10 @@ async fn sync_game_passes(
                 None => None,
             };
 
-            let resp = client.create_game_pass(universe_id, &body, image).await?;
+            let resp = client
+                .create_game_pass(universe_id, &body, image)
+                .await
+                .with_context(|| format!("Failed to create game pass '{}'", pass.name))?;
             // Roblox's create-game-pass endpoint returns `gamePassId`, not `id`.
             // Without this fallback the resource is created on Roblox but
             // sync reports failure — the lock file misses the ID and the
@@ -1503,7 +1504,10 @@ async fn sync_game_passes(
         // Persist the id into the yml right now, whether this run created the
         // pass or matched it by name, so a duplicate can never be created even
         // if a later step fails before state is saved, or the pass is renamed.
-        if pass.id.is_none() && id != 0 && !dry_run {
+        // Only an id Roblox confirmed (just created, or in its list): a stale
+        // lock entry must never turn into a permanent id.
+        let confirmed = did_create || remote_map.values().any(|(_, rid)| *rid == id);
+        if pass.id.is_none() && id != 0 && !dry_run && confirmed {
             write_back_id(
                 config_path,
                 config.env.as_deref(),
@@ -1575,7 +1579,8 @@ async fn sync_game_passes(
                     &serde_json::Value::Object(patch),
                     image_data,
                 )
-                .await?;
+                .await
+                .with_context(|| format!("Failed to update game pass '{}'", pass.name))?;
             info!(
                 "  [UPDATED] Game Pass '{}' (ID: {}) - updated: {}",
                 pass.name,
@@ -1602,12 +1607,12 @@ async fn sync_game_passes(
                 icon_hash.clone(),
                 asset_id,
             );
-            // Persist the lock file as soon as a resource is created, so its
-            // full state survives a later failure (the yml already has the id).
-            if did_create {
+            // Saved after every create or update, so a later failure can't
+            // lose it (the yml already has the id).
+            if did_create || has_changes {
                 state
                     .save(lock_root(config_path), config.env.as_deref())
-                    .context("Failed to save lock file after create")?;
+                    .context("Failed to save the lock file")?;
             }
         }
     }
@@ -1711,25 +1716,14 @@ async fn sync_developer_products(
             let current_hash = calculate_file_hash(&icon_path).await?;
             let stored_hash = state_entry.and_then(|s| s.icon_hash.as_ref());
 
-            if stored_hash == Some(&current_hash)
-                && state_entry.and_then(|s| s.icon_asset_id).is_some()
-            {
+            if stored_hash == Some(&current_hash) {
                 asset_id = state_entry.and_then(|s| s.icon_asset_id);
                 icon_hash = Some(current_hash);
                 icon_changed = false;
-            } else if dry_run || is_new {
-                // Nothing to upload here: a dry run uploads nothing, and a new
-                // product sends the file with its create request below.
-                icon_hash = Some(current_hash);
-                icon_changed = true;
-                changes.push("icon");
             } else {
-                let creator = config.creator.as_ref().ok_or_else(|| {
-                    anyhow!("Creator configuration is required for asset uploads")
-                })?;
-                let (aid, hash) = ensure_icon(client, &icon_path, state_entry, creator).await?;
-                asset_id = Some(aid);
-                icon_hash = Some(hash);
+                // Sent as a file with the create or update request below,
+                // which makes Roblox's own icon asset.
+                icon_hash = Some(current_hash);
                 icon_changed = true;
                 changes.push("icon");
             }
@@ -1762,7 +1756,8 @@ async fn sync_developer_products(
             };
             let resp = client
                 .create_developer_product(universe_id, &body, image)
-                .await?;
+                .await
+                .with_context(|| format!("Failed to create developer product '{}'", prod.name))?;
             // Same as game-pass create: the endpoint returns `productId`.
             // Legacy field shapes covered for resilience.
             let new_id = resp["id"]
@@ -1781,8 +1776,9 @@ async fn sync_developer_products(
             did_create = true;
             new_id
         };
-        // Persist the id right away, created or matched by name (see passes).
-        if prod.id.is_none() && id != 0 && !dry_run {
+        // Persist a confirmed id right away (see passes).
+        let confirmed = did_create || remote_map.values().any(|(_, rid)| *rid == id);
+        if prod.id.is_none() && id != 0 && !dry_run && confirmed {
             write_back_id(
                 config_path,
                 config.env.as_deref(),
@@ -1849,7 +1845,8 @@ async fn sync_developer_products(
                     &serde_json::Value::Object(patch),
                     image_data,
                 )
-                .await?;
+                .await
+                .with_context(|| format!("Failed to update developer product '{}'", prod.name))?;
             info!(
                 "  [UPDATED] Developer Product '{}' (ID: {}) - updated: {}",
                 prod.name,
@@ -1875,10 +1872,10 @@ async fn sync_developer_products(
                 icon_hash,
                 asset_id,
             );
-            if did_create {
+            if did_create || has_changes {
                 state
                     .save(lock_root(config_path), config.env.as_deref())
-                    .context("Failed to save lock file after create")?;
+                    .context("Failed to save the lock file")?;
             }
         }
     }
@@ -2028,9 +2025,16 @@ async fn sync_badges(
         // badge already on Roblox is invisible here and we'd create a duplicate.
         // Warn so the user can adopt it by id instead (run `import --badge-id`).
         if is_new {
+            let adopt = match &config.env {
+                Some(env) => format!("add `ids: {{ {}: <id> }}` to its entry", env),
+                None => {
+                    "add its `id:` to rblxsync.yml (e.g. via `rblxsync import --badge-id <id>`)"
+                        .to_string()
+                }
+            };
             warn!(
-                "Badge '{}' looks new and will be created. NOTE: Roblox cannot list disabled badges, so if a badge with this name already exists but is disabled, this WILL create a duplicate. To adopt the existing one, add its `id:` to rblxsync.yml (e.g. via `rblxsync import --badge-id <id>`).",
-                badge.name
+                "Badge '{}' looks new and will be created. NOTE: Roblox cannot list disabled badges, so if a badge with this name already exists but is disabled, this WILL create a duplicate. To adopt the existing one, {}.",
+                badge.name, adopt
             );
         }
 
@@ -2171,8 +2175,9 @@ async fn sync_badges(
             did_create = true;
             new_id
         };
-        // Persist the id right away, created or matched by name (see passes).
-        if badge.id.is_none() && id != 0 && !dry_run {
+        // Persist a confirmed id right away (see passes).
+        let confirmed = did_create || remote_map.values().any(|(_, rid)| *rid == id);
+        if badge.id.is_none() && id != 0 && !dry_run && confirmed {
             write_back_id(
                 config_path,
                 config.env.as_deref(),
@@ -2216,12 +2221,18 @@ async fn sync_badges(
 
             client
                 .update_badge(id, &serde_json::Value::Object(patch))
-                .await?;
+                .await
+                .with_context(|| format!("Failed to update badge '{}'", badge.name))?;
 
             // Update icon if it changed
             if icon_changed {
                 if let Some((data, filename, _)) = &icon_data {
-                    client.update_badge_icon(id, data.clone(), filename).await?;
+                    client
+                        .update_badge_icon(id, data.clone(), filename)
+                        .await
+                        .with_context(|| {
+                            format!("Failed to update the icon of badge '{}'", badge.name)
+                        })?;
                 }
             }
             info!(
@@ -2249,10 +2260,10 @@ async fn sync_badges(
                 icon_hash.clone(),
                 None,
             );
-            if did_create {
+            if did_create || has_changes {
                 state
                     .save(lock_root(config_path), config.env.as_deref())
-                    .context("Failed to save lock file after create")?;
+                    .context("Failed to save the lock file")?;
             }
         }
     }
@@ -2273,8 +2284,6 @@ async fn sync_badges(
     Ok(())
 }
 
-/// Refuses a badge that would cost Robux unless `--allow-paid-badges` was
-/// passed.
 /// Syncs each place's name, description and server size. Places can't be
 /// created, so an entry with no id in this universe is skipped. Each place is
 /// read first and only the fields that differ are sent: Roblox refuses any
@@ -2295,85 +2304,19 @@ async fn sync_places(
     let mut updated_count = 0;
     let mut skipped_count = 0;
     for place in places {
-        let label = place.label();
         let Some(place_id) = place.place_id else {
-            warn!("  [SKIP] Place {} - {}", label, missing_place_id(config));
+            warn!(
+                "  [SKIP] Place {} - {}",
+                place.label(),
+                missing_place_id(config)
+            );
             skipped_count += 1;
             continue;
         };
-        let remote = match client.get_place(universe_id, place_id).await {
-            Ok(remote) => remote,
-            Err(e) if dry_run => {
-                warn!(
-                    "Dry Run: Failed to read place {} (likely due to invalid credentials/universe): {}",
-                    place_id, e
-                );
-                serde_json::Value::Null
-            }
-            Err(e) => {
-                return Err(e.context(format!(
-                    "Failed to read place {} in universe {}",
-                    place_id, universe_id
-                )))
-            }
-        };
-
-        let mut fields = serde_json::Map::new();
-        let mut changes: Vec<&str> = Vec::new();
-        if let Some(name) = &place.name {
-            if remote["displayName"].as_str() != Some(name.as_str()) {
-                fields.insert("displayName".to_string(), name.clone().into());
-                changes.push("name");
-            }
-        }
-        if let Some(description) = &place.description {
-            if remote["description"].as_str() != Some(description.as_str()) {
-                fields.insert("description".to_string(), description.clone().into());
-                changes.push("description");
-            }
-        }
-        if let Some(size) = place.server_size {
-            if remote["serverSize"].as_u64() != Some(u64::from(size)) {
-                fields.insert("serverSize".to_string(), size.into());
-                changes.push("server_size");
-            }
-        }
-
-        if fields.is_empty() {
-            info!(
-                "  [SKIP] Place {} (ID: {}) - no changes detected",
-                label, place_id
-            );
-            skipped_count += 1;
-        } else if dry_run {
-            info!(
-                "  [UPDATE] Place {} (ID: {}) - would update: {}",
-                label,
-                place_id,
-                changes.join(", ")
-            );
+        if sync_place(universe_id, place_id, place, client, dry_run).await? {
             updated_count += 1;
         } else {
-            if let Err(e) = client.update_place(universe_id, place_id, &fields).await {
-                let hint = match e.to_string() {
-                    s if s.contains("409") => {
-                        ": it's open in Team Create. Close the session and run again"
-                    }
-                    s if s.contains("403") => ": the API key needs the universe.place:write scope",
-                    _ => "",
-                };
-                return Err(e.context(format!(
-                    "Failed to update place {} (ID: {}){}",
-                    label, place_id, hint
-                )));
-            }
-            info!(
-                "  [UPDATED] Place {} (ID: {}) - updated: {}",
-                label,
-                place_id,
-                changes.join(", ")
-            );
-            updated_count += 1;
+            skipped_count += 1;
         }
     }
 
@@ -2384,6 +2327,93 @@ async fn sync_places(
     Ok(())
 }
 
+/// Syncs one place's name, description and server size: reads it, then sends
+/// only the fields that differ. Returns whether anything changed (or would,
+/// in a dry run).
+async fn sync_place(
+    universe_id: u64,
+    place_id: u64,
+    place: &PlaceConfig,
+    client: &RobloxClient,
+    dry_run: bool,
+) -> Result<bool> {
+    let label = place.label();
+    let remote = match client.get_place(universe_id, place_id).await {
+        Ok(remote) => remote,
+        Err(e) if dry_run => {
+            warn!(
+                "Dry Run: Failed to read place {} (likely due to invalid credentials/universe): {}",
+                place_id, e
+            );
+            serde_json::Value::Null
+        }
+        Err(e) => {
+            return Err(e.context(format!(
+                "Failed to read place {} in universe {}",
+                place_id, universe_id
+            )))
+        }
+    };
+
+    let mut fields = serde_json::Map::new();
+    let mut changes: Vec<&str> = Vec::new();
+    if let Some(name) = &place.name {
+        if remote["displayName"].as_str() != Some(name.as_str()) {
+            fields.insert("displayName".to_string(), name.clone().into());
+            changes.push("name");
+        }
+    }
+    if let Some(description) = &place.description {
+        if remote["description"].as_str() != Some(description.as_str()) {
+            fields.insert("description".to_string(), description.clone().into());
+            changes.push("description");
+        }
+    }
+    if let Some(size) = place.server_size {
+        if remote["serverSize"].as_u64() != Some(u64::from(size)) {
+            fields.insert("serverSize".to_string(), size.into());
+            changes.push("server_size");
+        }
+    }
+
+    if fields.is_empty() {
+        info!(
+            "  [SKIP] Place {} (ID: {}) - no changes detected",
+            label, place_id
+        );
+        return Ok(false);
+    }
+    if dry_run {
+        info!(
+            "  [UPDATE] Place {} (ID: {}) - would update: {}",
+            label,
+            place_id,
+            changes.join(", ")
+        );
+        return Ok(true);
+    }
+    if let Err(e) = client.update_place(universe_id, place_id, &fields).await {
+        let hint = match e.to_string() {
+            s if s.contains("409") => ": it's open in Team Create. Close the session and run again",
+            s if s.contains("403") => ": the API key needs the universe.place:write scope",
+            _ => "",
+        };
+        return Err(e.context(format!(
+            "Failed to update place {} (ID: {}){}",
+            label, place_id, hint
+        )));
+    }
+    info!(
+        "  [UPDATED] Place {} (ID: {}) - updated: {}",
+        label,
+        place_id,
+        changes.join(", ")
+    );
+    Ok(true)
+}
+
+/// Refuses a badge that would cost Robux unless `--allow-paid-badges` was
+/// passed.
 fn refuse_unpaid_badge(name: &str, cost: Option<u64>, allow_paid: bool) -> Result<()> {
     match cost {
         Some(robux) if robux > 0 && !allow_paid => Err(anyhow!(
@@ -2417,7 +2447,10 @@ fn new_pass_for_sale(pass: &GamePassConfig) -> Option<bool> {
 
 /// Fields a new game pass is created with, for the create log lines.
 fn new_pass_fields(pass: &GamePassConfig) -> String {
-    let mut fields = String::from("name, description, price");
+    let mut fields = String::from("name, description");
+    if pass.price.is_some() {
+        fields.push_str(", price");
+    }
     match new_pass_for_sale(pass) {
         Some(true) => fields.push_str(", on sale"),
         Some(false) => fields.push_str(", off sale"),
@@ -2478,40 +2511,6 @@ pub(crate) async fn calculate_file_hash(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-async fn ensure_icon(
-    client: &RobloxClient,
-    path: &Path,
-    state: Option<&ResourceState>,
-    creator: &crate::config::CreatorConfig,
-) -> Result<(u64, String)> {
-    if !path.exists() {
-        return Err(anyhow!("Icon file not found: {:?}", path));
-    }
-
-    // Calculate Hash
-    let content = tokio::fs::read(path).await?;
-    let mut hasher = Sha256::new();
-    hasher.update(&content);
-    let hash = format!("{:x}", hasher.finalize());
-
-    // Check State
-    if let Some(s) = state {
-        if let (Some(sh), Some(sid)) = (&s.icon_hash, s.icon_asset_id) {
-            if sh == &hash {
-                return Ok((sid, hash));
-            }
-        }
-    }
-
-    // Upload
-    info!("Uploading icon: {:?}", path);
-    let name = path.file_stem().unwrap_or_default().to_string_lossy();
-    let asset_id_str = client.upload_asset(path, &name, creator).await?;
-    let asset_id = asset_id_str.parse::<u64>()?;
-
-    Ok((asset_id, hash))
-}
-
 /// Escape special characters for embedding in a Luau/Lua string literal.
 /// Mirrors `escape_luau_string` in `src/output.rs`.
 fn escape_lua_string(s: &str) -> String {
@@ -2548,9 +2547,11 @@ pub async fn export(
         }
         if let Some(id) = item["id"].as_u64() {
             lua.push_str(&format!("      id = {},\n", id));
-        }
-        if let Some(p) = item["price"].as_u64() {
-            lua.push_str(&format!("      price = {},\n", p));
+            // The list has no prices; each pass's detail does.
+            let detail = client.get_game_pass(universe_id, id).await?;
+            if let Some(p) = detail["priceInformation"]["defaultPriceInRobux"].as_u64() {
+                lua.push_str(&format!("      price = {},\n", p));
+            }
         }
         lua.push_str("    },\n");
     }
@@ -2562,10 +2563,11 @@ pub async fn export(
         if let Some(n) = item["name"].as_str() {
             lua.push_str(&format!("      name = \"{}\",\n", escape_lua_string(n)));
         }
-        if let Some(id) = item["id"].as_u64() {
+        // The product list names its id `productId`.
+        if let Some(id) = item["productId"].as_u64().or(item["id"].as_u64()) {
             lua.push_str(&format!("      id = {},\n", id));
         }
-        if let Some(p) = item["price"].as_u64() {
+        if let Some(p) = item["priceInformation"]["defaultPriceInRobux"].as_u64() {
             lua.push_str(&format!("      price = {},\n", p));
         }
         lua.push_str("    },\n");
@@ -2606,7 +2608,7 @@ mod tests {
     use crate::api::multipart_field;
     use crate::config::{BadgeConfig, GamePassConfig, UniverseConfig};
     use serde_json::json;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_json, body_string_contains, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(server: &MockServer) -> RobloxClient {
@@ -2667,6 +2669,7 @@ mod tests {
     #[tokio::test]
     async fn adopt_remote_game_pass_triggers_patch() {
         let server = MockServer::start().await;
+        let lock_dir = tempfile::tempdir().unwrap();
         Mock::given(method("GET"))
             .and(path("/game-passes/v1/universes/1/game-passes"))
             .respond_with(ResponseTemplate::new(200).set_body_json(
@@ -2691,7 +2694,7 @@ mod tests {
             &mut state,
             &client(&server),
             false,
-            Path::new("/nonexistent/rblxsync.yml"),
+            &lock_dir.path().join("rblxsync.yml"),
         )
         .await
         .unwrap();
@@ -2731,23 +2734,169 @@ mod tests {
         .unwrap();
     }
 
-    // (c) genre/max_players-only universe config does not PATCH but persists to state.
+    // (c) Universe settings go through Open Cloud: only the fields that differ
+    // from Roblox are sent, and the name lands on the root place.
     #[tokio::test]
-    async fn universe_genre_max_players_only_persists_without_patch() {
-        let cookie_client = RobloxCookieClient::new("fake-cookie".to_string());
-        let mut config = base_config();
-        config.universe.genre = Some("adventure".to_string());
-        config.universe.max_players = Some(40);
-        let mut state = SyncState::default();
+    async fn universe_settings_patch_only_changed_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cloud/v2/universes/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "rootPlace": "universes/1/places/777",
+                "desktopEnabled": true,
+                "mobileEnabled": false,
+                "tabletEnabled": false,
+                "consoleEnabled": false,
+                "vrEnabled": false,
+                "privateServerPriceRobux": 50
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/cloud/v2/universes/1"))
+            .and(query_param(
+                "updateMask",
+                "mobileEnabled,privateServerPriceRobux",
+            ))
+            // In the mask but not the body: Roblox clears it, and refuses `null`.
+            .and(body_json(json!({"mobileEnabled": true})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/cloud/v2/universes/1/places/777"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"displayName": "Old", "serverSize": 20})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/cloud/v2/universes/1/places/777"))
+            .and(query_param("updateMask", "displayName"))
+            .and(body_json(json!({"displayName": "My Game"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
 
-        // No HTTP mock is set up; if it tried to PATCH develop.roblox.com it would error.
-        sync_universe_settings(1, &config, &mut state, &cookie_client, false)
+        let mut config = base_config();
+        config.universe.name = Some("My Game".to_string());
+        config.universe.max_players = Some(20);
+        config.universe.playable_devices = Some(vec!["Computer".into(), "phone".into()]);
+        config.universe.private_server_cost = Some(PrivateServerCost::Disabled);
+        let mut state = SyncState::default();
+        sync_universe_settings(1, &config, &mut state, &client(&server), false)
             .await
             .unwrap();
 
         let u = state.universe.as_ref().unwrap();
-        assert_eq!(u.genre.as_deref(), Some("adventure"));
-        assert_eq!(u.max_players, Some(40));
+        assert_eq!(u.max_players, Some(20));
+        assert_eq!(u.private_server_cost.as_deref(), Some("disabled"));
+    }
+
+    // A private server price that already matches is never resent: any price
+    // change cancels every private server subscription.
+    #[tokio::test]
+    async fn universe_settings_skip_unchanged_private_server_price() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cloud/v2/universes/1"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"privateServerPriceRobux": 0})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let mut config = base_config();
+        config.universe.private_server_cost = Some(PrivateServerCost::Free);
+        sync_universe_settings(
+            1,
+            &config,
+            &mut SyncState::default(),
+            &client(&server),
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_unknown_device() {
+        let mut config = base_config();
+        config.universe.playable_devices = Some(vec!["computer".into(), "fridge".into()]);
+        let msg = validate(&config).unwrap_err().to_string();
+        assert!(msg.contains("fridge"), "{}", msg);
+    }
+
+    // Roblox refuses price 0 on create, so validate stops it before a run.
+    #[test]
+    fn validate_rejects_a_zero_price() {
+        let mut config = base_config();
+        config.game_passes = vec![game_pass("Free Pass", Some(0))];
+        let msg = validate(&config).unwrap_err().to_string();
+        assert!(
+            msg.contains("Free Pass") && msg.contains("at least 1"),
+            "{}",
+            msg
+        );
+
+        let mut config = base_config();
+        config.developer_products = vec![DeveloperProductConfig {
+            id: None,
+            ids: Default::default(),
+            name: "Nothing".to_string(),
+            description: None,
+            price: 0,
+            icon: None,
+            is_active: None,
+        }];
+        let msg = validate(&config).unwrap_err().to_string();
+        assert!(
+            msg.contains("Nothing") && msg.contains("at least 1"),
+            "{}",
+            msg
+        );
+    }
+
+    // A pass with no price is created without one: Roblox refuses `price: 0`.
+    #[tokio::test]
+    async fn create_game_pass_without_a_price_sends_none() {
+        let server = MockServer::start().await;
+        mount_empty_game_pass_list(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/game-passes/v1/universes/1/game-passes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"gamePassId": 6})))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = base_config();
+        config.game_passes = vec![game_pass("Supporter", None)];
+        sync_game_passes(
+            1,
+            &config,
+            &mut SyncState::default(),
+            &client(&server),
+            false,
+            &dir.path().join("rblxsync.yml"),
+        )
+        .await
+        .unwrap();
+
+        let creates = bodies(&server, "POST", "/game-passes/v1/universes/1/game-passes").await;
+        assert_eq!(
+            multipart_field(&creates[0], "name").as_deref(),
+            Some("Supporter")
+        );
+        assert_eq!(multipart_field(&creates[0], "price"), None);
+        assert_eq!(multipart_field(&creates[0], "isForSale"), None);
     }
 
     // (d) export escapes quotes and backslashes in resource names.
@@ -2757,19 +2906,31 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/game-passes/v1/universes/1/game-passes"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": [{"id": 1, "name": "Quote\"And\\Slash", "price": 5}],
+                "data": [{"id": 1, "name": "Quote\"And\\Slash"}],
                 "nextPageCursor": null
             })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/game-passes/v1/universes/1/game-passes/1/creator"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"gamePassId": 1, "priceInformation": {"defaultPriceInRobux": 5}}),
+            ))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path(
                 "/developer-products/v2/universes/1/developer-products/creator",
             ))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"developerProducts": [], "nextPageToken": null})),
-            )
+            // Real list shape: the id is `productId`, the price is nested.
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "developerProducts": [{
+                    "productId": 7,
+                    "name": "Coins",
+                    "priceInformation": {"defaultPriceInRobux": 25}
+                }],
+                "nextPageToken": null
+            })))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -2798,6 +2959,16 @@ mod tests {
         let contents = std::fs::read_to_string(&out).unwrap();
         assert!(
             contents.contains(r#"name = "Quote\"And\\Slash","#),
+            "contents: {}",
+            contents
+        );
+        assert!(
+            contents.contains("      id = 1,\n      price = 5,"),
+            "contents: {}",
+            contents
+        );
+        assert!(
+            contents.contains("name = \"Coins\",\n      id = 7,\n      price = 25,"),
             "contents: {}",
             contents
         );
@@ -2940,43 +3111,6 @@ mod tests {
         assert!(msg.to_lowercase().contains("icon"), "msg: {}", msg);
     }
 
-    // Preflight flags a pass/product icon when no creator is configured.
-    #[tokio::test]
-    async fn preflight_flags_icon_without_creator() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/universes/1/badges"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"badges": [], "nextPageCursor": null})),
-            )
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("vip.png"), b"img").unwrap();
-        let mut config = base_config();
-        config.assets_dir = dir.path().to_string_lossy().to_string();
-        config.creator = None;
-        config.game_passes = vec![GamePassConfig {
-            id: None,
-            ids: Default::default(),
-            name: "VIP".to_string(),
-            description: None,
-            price: Some(100),
-            icon: Some("vip.png".to_string()),
-            is_for_sale: None,
-        }];
-        let state = SyncState::default();
-
-        let err = preflight(1, &config, &state, &client(&server), false, false)
-            .await
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("VIP"), "msg: {}", msg);
-        assert!(msg.to_lowercase().contains("creator"), "msg: {}", msg);
-    }
-
     // Preflight passes for a fully-valid config (no mutation needed).
     #[tokio::test]
     async fn preflight_passes_for_valid_config() {
@@ -2996,10 +3130,6 @@ mod tests {
         std::fs::write(dir.path().join("badge.png"), b"img").unwrap();
         let mut config = base_config();
         config.assets_dir = dir.path().to_string_lossy().to_string();
-        config.creator = Some(crate::config::CreatorConfig {
-            id: "1".to_string(),
-            creator_type: "user".to_string(),
-        });
         config.badge_payment_source = Some("user".to_string());
         config.game_passes = vec![GamePassConfig {
             id: None,
@@ -3457,6 +3587,7 @@ mod tests {
     #[tokio::test]
     async fn run_id_rename_patches_no_create() {
         let server = MockServer::start().await;
+        let lock_dir = tempfile::tempdir().unwrap();
         mount_empty_game_pass_list(&server).await;
         // A create POST would fail the test.
         Mock::given(method("POST"))
@@ -3492,7 +3623,7 @@ mod tests {
             &mut state,
             &client(&server),
             false,
-            Path::new("/nonexistent/rblxsync.yml"),
+            &lock_dir.path().join("rblxsync.yml"),
         )
         .await
         .unwrap();
@@ -3505,6 +3636,7 @@ mod tests {
     #[tokio::test]
     async fn run_id_adopt_patches_no_create() {
         let server = MockServer::start().await;
+        let lock_dir = tempfile::tempdir().unwrap();
         mount_empty_game_pass_list(&server).await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(500))
@@ -3529,7 +3661,7 @@ mod tests {
             &mut state,
             &client(&server),
             false,
-            Path::new("/nonexistent/rblxsync.yml"),
+            &lock_dir.path().join("rblxsync.yml"),
         )
         .await
         .unwrap();
@@ -3554,7 +3686,7 @@ mod tests {
         let cfg = dir.path().join("rblxsync.yml");
         std::fs::write(
             &cfg,
-            "game_passes:\n  # the premium pass\n  - name: VIP Pass\n    price: 100\n",
+            "universe:\n  id: 1\ngame_passes:\n  # the premium pass\n  - name: VIP Pass\n    price: 100\n",
         )
         .unwrap();
 
@@ -4051,7 +4183,6 @@ mod tests {
             config,
             SyncState::default(),
             client(&server),
-            None,
             false,
             false,
             &cfg,
@@ -4079,6 +4210,112 @@ mod tests {
     }
 
     // An entry matched by name gets its id written back, not just a created one.
+    // A run that stops partway keeps what it did: the badge it created before
+    // the failure is in the yml, the lock file and the generated config, so a
+    // rerun creates only the rest.
+    #[tokio::test]
+    async fn run_that_fails_partway_saves_what_it_created() {
+        let server = MockServer::start().await;
+        for list in [
+            "/game-passes/v1/universes/1/game-passes",
+            "/developer-products/v2/universes/1/developer-products/creator",
+        ] {
+            Mock::given(method("GET"))
+                .and(path(list))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
+                .mount(&server)
+                .await;
+        }
+        mount_empty_badge_list(&server).await;
+        mount_free_badges_quota(&server, 5).await;
+        Mock::given(method("POST"))
+            .and(path("/legacy-badges/v1/universes/1/badges"))
+            .and(body_string_contains("Second"))
+            .respond_with(ResponseTemplate::new(500))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/legacy-badges/v1/universes/1/badges"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 11})))
+            .mount(&server)
+            .await;
+
+        let assets = assets_with(&["a.png", "b.png"]);
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("rblxsync.yml");
+        let luau = dir.path().join("Config.luau");
+        std::fs::write(
+            &cfg,
+            format!(
+                "assets_dir: {}\nuniverse:\n  id: 1\nbadge_payment_source: user\noutput_path: {}\n\
+                 badges:\n  - name: First\n    icon: a.png\n  - name: Second\n    icon: b.png\n",
+                assets.path().display(),
+                luau.display()
+            ),
+        )
+        .unwrap();
+
+        let config = RblxSyncConfig::load(&cfg).unwrap().resolve(None).unwrap();
+        let err = run(
+            config,
+            SyncState::default(),
+            client(&server),
+            false,
+            false,
+            &cfg,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{:#}", err).contains("Second"), "{:#}", err);
+
+        let yaml = std::fs::read_to_string(&cfg).unwrap();
+        assert!(yaml.contains("  - name: First\n    id: 11\n"), "{}", yaml);
+        let lock = SyncState::load(dir.path(), None).unwrap();
+        assert_eq!(lock.badges.get(&11).unwrap().name, "First");
+        let luau = std::fs::read_to_string(&luau).unwrap();
+        assert!(luau.contains("Id = 11"), "{}", luau);
+    }
+
+    // A write-back that would leave rblxsync.yml unloadable isn't saved.
+    #[test]
+    fn write_back_never_saves_a_broken_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("rblxsync.yml");
+        let yaml = "universe:\n  id: 1\ngame_passes:\n  - name: VIP\n    ids: { dev: 1, }\n";
+        std::fs::write(&cfg, yaml).unwrap();
+        write_back_id(&cfg, Some("staging"), "game_passes", "VIP", 2).unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), yaml);
+    }
+
+    // A lock entry matched by name whose id Roblox doesn't list (stale lock,
+    // deleted pass) is never written into the yml as a permanent id.
+    #[tokio::test]
+    async fn stale_lock_id_is_not_written_back() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/game-passes/v1/universes/1/game-passes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"data": [{"id": 42, "name": "VIP Pass"}], "nextPageCursor": null}),
+            ))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("rblxsync.yml");
+        let yaml = "universe:\n  id: 1\ngame_passes:\n  - name: VIP Pass\n    price: 100\n";
+        std::fs::write(&cfg, yaml).unwrap();
+        let mut config = base_config();
+        config.game_passes = vec![game_pass("VIP Pass", Some(100))];
+        let mut state = SyncState::default();
+        state.update_game_pass(10, "VIP Pass".into(), None, Some(100), None, None, None);
+
+        sync_game_passes(1, &config, &mut state, &client(&server), false, &cfg)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), yaml);
+    }
+
     #[tokio::test]
     async fn adopting_by_name_writes_the_id_back() {
         let server = MockServer::start().await;
@@ -4097,7 +4334,11 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("rblxsync.yml");
-        std::fs::write(&cfg, "game_passes:\n  - name: VIP Pass\n    price: 100\n").unwrap();
+        std::fs::write(
+            &cfg,
+            "universe:\n  id: 1\ngame_passes:\n  - name: VIP Pass\n    price: 100\n",
+        )
+        .unwrap();
         let mut config = base_config();
         config.game_passes = vec![game_pass("VIP Pass", Some(100))];
 
@@ -4115,7 +4356,11 @@ mod tests {
         assert!(written.contains("    id: 42\n"), "{}", written);
 
         // A dry run writes nothing.
-        std::fs::write(&cfg, "game_passes:\n  - name: VIP Pass\n    price: 100\n").unwrap();
+        std::fs::write(
+            &cfg,
+            "universe:\n  id: 1\ngame_passes:\n  - name: VIP Pass\n    price: 100\n",
+        )
+        .unwrap();
         sync_game_passes(
             1,
             &config,
@@ -4126,7 +4371,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!std::fs::read_to_string(&cfg).unwrap().contains("id:"));
+        assert!(!std::fs::read_to_string(&cfg).unwrap().contains("id: 42"));
     }
 
     // --- places ---
@@ -4138,6 +4383,44 @@ mod tests {
             server_size,
             ..Default::default()
         }
+    }
+
+    // A place that can't publish doesn't stop the others, and the command
+    // fails at the end so CI doesn't report it as published.
+    #[tokio::test]
+    async fn publish_fails_after_publishing_the_rest() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/universes/v1/1/places/20/versions"))
+            .and(query_param("versionType", "Published"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"versionNumber": 3})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("arena.rbxl");
+        std::fs::write(&good, b"place").unwrap();
+        let mut config = base_config();
+        config.places = vec![
+            PlaceConfig {
+                file_path: dir
+                    .path()
+                    .join("missing.rbxl")
+                    .to_string_lossy()
+                    .to_string(),
+                publish: true,
+                ..place(Some(10), None, None)
+            },
+            PlaceConfig {
+                file_path: good.to_string_lossy().to_string(),
+                publish: true,
+                ..place(Some(20), None, None)
+            },
+        ];
+
+        let err = publish(config, client(&server)).await.unwrap_err();
+        assert!(err.to_string().contains("[10]"), "{}", err);
     }
 
     async fn mount_place(server: &MockServer, id: u64, body: serde_json::Value) {
@@ -4264,6 +4547,65 @@ mod tests {
 
     // Import names each subplace, takes server sizes, and keeps the
     // environments and each entry's environment ids.
+    // Import refreshes the universe settings the config manages, so a run
+    // right after it can't revert a Creator Hub change, and it keeps the root
+    // place's size in `max_players` only (preflight refuses it in both).
+    #[tokio::test]
+    async fn import_refreshes_managed_universe_settings() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cloud/v2/universes/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "displayName": "Game",
+                "rootPlace": "universes/1/places/777",
+                "desktopEnabled": true,
+                "mobileEnabled": true,
+                "tabletEnabled": false,
+                "consoleEnabled": false,
+                "vrEnabled": false,
+                "privateServerPriceRobux": 150
+            })))
+            .mount(&server)
+            .await;
+        for list in [
+            "/game-passes/v1/universes/1/game-passes",
+            "/developer-products/v2/universes/1/developer-products/creator",
+            "/v1/universes/1/badges",
+        ] {
+            Mock::given(method("GET"))
+                .and(path(list))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
+                .mount(&server)
+                .await;
+        }
+        mount_place(&server, 777, json!({"serverSize": 12, "root": true})).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("rblxsync.yml");
+        std::fs::write(
+            &cfg,
+            "universe:\n  id: 1\n  playable_devices: [computer]\n  max_players: 50\n  private_server_cost: 100\n",
+        )
+        .unwrap();
+
+        import(client(&server), &cfg, None, vec![], vec![])
+            .await
+            .unwrap();
+
+        let parsed = RblxSyncConfig::load(&cfg).unwrap();
+        assert_eq!(
+            parsed.universe.playable_devices,
+            Some(vec!["computer".to_string(), "phone".to_string()])
+        );
+        assert_eq!(
+            parsed.universe.private_server_cost,
+            Some(PrivateServerCost::Paid(150))
+        );
+        assert_eq!(parsed.universe.max_players, Some(12));
+        assert_eq!(parsed.places[0].place_id, Some(777));
+        assert_eq!(parsed.places[0].server_size, None);
+    }
+
     #[tokio::test]
     async fn import_pulls_place_settings_and_keeps_environment_ids() {
         let server = MockServer::start().await;

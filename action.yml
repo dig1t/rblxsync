@@ -20,10 +20,6 @@ inputs:
     description: 'Extra flags, such as --dry-run. Split on spaces, so no quoting.'
     required: false
     default: ''
-  roblox_cookie:
-    description: 'Your .ROBLOSECURITY cookie. Only needed when changing universe settings.'
-    required: false
-    default: ''
 
 runs:
   using: "composite"
@@ -63,7 +59,6 @@ runs:
       shell: bash
       env:
         ROBLOX_API_KEY: ${{ inputs.api_key }}
-        ROBLOX_COOKIE: ${{ inputs.roblox_cookie }}
         COMMAND: ${{ inputs.command }}
         CONFIG: ${{ inputs.config }}
         # ARGS is intentionally left unquoted below so multiple flags

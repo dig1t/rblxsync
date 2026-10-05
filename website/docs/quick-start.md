@@ -102,7 +102,6 @@ export type Universe = {
 	Id: number,
 	Name: string?,
 	Description: string?,
-	Genre: string?,
 	PlayableDevices: {string}?,
 	MaxPlayers: number?,
 	PrivateServerCost: (number | "disabled")?,
@@ -135,7 +134,6 @@ return {
 		Id = 123456789,
 		Name = "Zombie Diner Tycoon",
 		Description = "Cook burgers. Survive the night shift.",
-		Genre = "adventure",
 		PlayableDevices = { "computer", "phone", "tablet" },
 		MaxPlayers = 12,
 		PrivateServerCost = 100,
@@ -223,7 +221,7 @@ Every field it can contain is listed in the [API reference](/api#the-generated-l
 
 ## The commands
 
-Working on more than one game? Point `--config` at a different file. It works on either side of the command. A dev copy of the same game goes in the same file under [`environments:`](/api#environments), and every command takes `--env dev` to use it.
+Working on more than one game? Point `--config` at a different file. It works on either side of the command. A dev copy of the same game goes in the same file under [`environments:`](/api#environments), and every command but `import` takes `--env dev` to use it.
 
 ```bash
 rblxsync run --config production.yml
@@ -252,22 +250,18 @@ With `--env dev`, the ID it uses and writes is the entry's `ids: { dev: ... }`.
 
 That write-back happens the moment the resource is created or found, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate.
 
-Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A new pass or product gets its icon in the same call that creates it.
+Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A pass or product gets its icon in the same call that creates or updates it.
 
 Thumbnails use the checksum too:
 
 ```yaml
 thumbnails:
-  game_page:            # the top of your game's page, in this order
-    - image: "thumbnails/lobby.png"
-      alt_text: "Players gathered in the lobby before a round"
-    - image: "thumbnails/arena.png"
   home_page:            # home page tiles; two or more turn on personalization
     - image: "thumbnails/home_a.png"
     - image: "thumbnails/home_b.png"
 ```
 
-A new or changed image gets uploaded and the old upload deleted. The game page is put in the order you listed. The home page's running personalization gets updated in place, so it keeps its statistics.
+A new or changed image gets uploaded and the old upload deleted. The home page's running personalization gets updated in place, so it keeps its statistics.
 
 ## `rblxsync-lock.yml`
 

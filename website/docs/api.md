@@ -50,22 +50,24 @@ Makes Roblox match your config. Safe to run as many times as you like.
 
 With `--env <name>`, the ID in play is the entry's `ids.<name>` instead of `id`, and that's where the write-back goes.
 
-That write-back is a surgical line insert. Your comments and formatting survive it, and it happens the instant the resource is created or matched rather than at the end of the run. If a later step fails, the ID is already saved and the next run adopts it instead of making a second copy.
+That write-back is a surgical line insert. Your comments and formatting survive it, and it happens the instant the resource is created or matched rather than at the end of the run. If a later step fails, the ID is already saved and the next run adopts it instead of making a second copy. The lock file is saved after every change as well, and a run that stops on an error still writes `Config.luau`, so rerunning picks up where it stopped.
 
-**Places** can't be created through the API, so a place is only synced when it has an ID in the universe being synced (`place_id`, or `ids.<name>` with `--env`); otherwise it's skipped with a warning. A place's `name`, `description`, and `server_size` go out through Open Cloud. rblxsync reads the place first and sends only the fields that differ, because Roblox refuses any place update while the place is open in Team Create. The root place's name and description are the experience's: if the root place sets one that `universe:` sets too, the run stops before changing anything.
+**Places** can't be created through the API, so a place is only synced when it has an ID in the universe being synced (`place_id`, or `ids.<name>` with `--env`); otherwise it's skipped with a warning. A place's `name`, `description`, and `server_size` go out through Open Cloud. rblxsync reads the place first and sends only the fields that differ, because Roblox refuses any place update while the place is open in Team Create. The root place's name, description, and server size are the experience's: if the root place sets one that `universe:` sets too, the run stops before changing anything.
 
-**Icons** are only re-uploaded when the SHA-256 of the local file differs from the hash in the lock file. A new game pass or developer product is created with its icon in the same request.
+**Icons** are only re-uploaded when the SHA-256 of the local file differs from the hash in the lock file. The icon file goes out in the same request that creates or updates the game pass or developer product.
 
 **Badge cost.** Roblox gives each game 5 free badges per day (GMT), then charges 100 Robux a badge. When a run would create badges, it first reads how many free ones are left today and prints it. Badges past that count need `--allow-paid-badges`, or the run stops before changing anything. Each create sends the cost rblxsync expects (`expectedCost`, 0 while free ones last), and Roblox refuses, without charging, a badge whose real cost is different.
 
-**Thumbnails** are worked out before anything changes. A missing image file, or a game page that would end up holding more than 10 images, stops the run with no changes made. Each upload and delete is written to the lock file as it happens. See [`thumbnails`](#thumbnails).
+**Thumbnails** are worked out before anything changes. A missing image file stops the run with no changes made. Each upload and delete is written to the lock file as it happens. See [`thumbnails`](#thumbnails).
 
 **Other behavior**
 
 - A new game pass with a `price` is created on sale, unless its `is_for_sale` is `false`.
-- If any universe setting is present (`name`, `description`, `genre`, `playable_devices`, `max_players`, or `private_server_cost`), `run` requires `ROBLOX_COOKIE`. Without it, the command prints cookie setup instructions and exits `1`. An environment inherits the top level's settings unless it sets them to `null`.
-- A successful run writes `rblxsync-lock.yml`, or `rblxsync-lock.<name>.yml` with `--env <name>`.
-- If `output_path` is set, the Luau module is regenerated after the sync.
+- Universe settings (`name`, `description`, `playable_devices`, `max_players`, `private_server_cost`) are read from Roblox first, and only the fields that differ are sent. An unchanged private server price is never re-sent, because a price change cancels every private server subscription and Roblox rate-limits it. An environment inherits the top level's settings unless it sets them to `null`.
+- A top-level `creator:` is ignored with a warning: icons go up with the pass or product itself, so there's no separate asset to own.
+- A `genre:` under `universe:` is ignored with a warning. Roblox only allows a genre change once every 3 months, so set it in the Creator Hub.
+- The lock file (`rblxsync-lock.yml`, or `rblxsync-lock.<name>.yml` with `--env <name>`) is saved after every change.
+- If `output_path` is set, the Luau module is regenerated after the sync, including one that stopped on an error.
 
 **Paths:** `assets_dir`, `output_path`, and each place's `file_path` are relative to the folder you run rblxsync from. The lock file is always read from and written to the config file's folder.
 
@@ -75,11 +77,11 @@ That write-back is a surgical line insert. Your comments and formatting survive 
 rblxsync publish
 ```
 
-Uploads and publishes every place in the config with `publish: true`. Does not need `ROBLOX_COOKIE`.
+Uploads and publishes every place in the config with `publish: true`.
 
 - With `--env <name>`, each place goes to its `ids.<name>` place. A place without one is skipped with a warning.
-- A `file_path` that doesn't exist is logged as an error and skipped.
-- One place failing does not stop the others.
+- A `file_path` that doesn't exist is an error.
+- One place failing does not stop the others, but the command exits with an error once they're done.
 
 Places are always published live. There's no "save without publishing" option.
 
@@ -97,9 +99,9 @@ Pulls an existing experience down into `rblxsync.yml` and `rblxsync-lock.yml`. U
 | `--place-id <id>` | Yes | An extra place to import. The API key only auto-discovers the root place, so pass one flag per additional place. |
 | `--badge-id <id>` | Yes | A badge to import by ID. Roblox's badge list leaves out **disabled** badges, so this is the only way to pull those in. |
 
-**Remote wins.** Where a value exists both locally and on Roblox, the Roblox value overwrites yours. Entries that only exist locally are kept. Lock file entries for resources that no longer exist are dropped.
+**Remote wins.** Where a value exists both locally and on Roblox, the Roblox value overwrites yours. That includes `playable_devices`, `private_server_cost`, and `max_players` when your config sets them; when it doesn't, they stay out, so import never starts managing a setting you left alone. Entries that only exist locally are kept. Lock file entries for resources that no longer exist are dropped.
 
-**Places** come in with their `name`, `description` (when it isn't empty), and `server_size`. The root place gets only `server_size`: its name and description are the experience's, which go into `universe:`. A place already in your config keeps its `file_path`, `publish`, and `ids`.
+**Places** come in with their `name`, `description` (when it isn't empty), and `server_size`. The root place gets only `server_size`, or nothing when `universe.max_players` is set, since that's where its size goes: its name, description, and server size are the experience's. A place already in your config keeps its `file_path`, `publish`, and `ids`.
 
 **Environments** are kept as they are, and so is each entry's `ids`. `import` reads the top-level universe only, and refuses `--env`: an environment's names and prices would overwrite the entries every environment shares. To link a dev copy that already has the same items, run `rblxsync run --env dev`. It matches them by name, updates them to match the config, and writes each ID into `ids:`.
 
@@ -121,7 +123,7 @@ Checks the config without contacting Roblox. It does **not** need `ROBLOX_API_KE
 4. Every environment sets its own `universe.id`, different from the top level's and every other environment's, and lists no entries of its own.
 5. Every key in an entry's `ids` is an environment.
 6. Every place has a `place_id` or `ids`, and a place with `publish: true` has a `file_path`.
-7. `thumbnails.game_page` has at most 10 images and `thumbnails.home_page` at most 5, and `alt_text` only appears on the game page.
+7. `thumbnails.game_page` isn't set, and `thumbnails.home_page` has at most 5 images and no `alt_text`.
 
 With `--env <name>`, it also checks that the environment exists and resolves. Exits `1` on failure, logs `Config file is valid.` on success.
 
@@ -168,44 +170,37 @@ The config is `rblxsync.yml` unless `--config` says otherwise.
 | --- | --- | --- | --- | --- |
 | `universe` | object | **Yes** | | Which universe, plus its settings. |
 | `assets_dir` | string | No | `assets` | Folder holding the icon and thumbnail images your config references. |
-| `creator` | object | No | | Who owns uploaded icons. Only needed when uploading icons. |
 | `game_passes` | list | No | `[]` | Game passes to sync. |
 | `developer_products` | list | No | `[]` | Developer products to sync. |
 | `badges` | list | No | `[]` | Badges to sync. |
 | `places` | list | No | `[]` | Places to configure and to `publish`. |
-| `thumbnails` | object | No | | Game page and home page thumbnails. |
+| `thumbnails` | object | No | | Home page thumbnails. |
 | `environments` | map | No | | Other universes the same entries sync to, by name. See [`environments`](#environments). |
 | `badge_payment_source` | string | No | | `"user"` or `"group"`. Needed to create badges. The wallet a badge past the free daily quota is paid from. |
 | `output_path` | string | No | | Where `run` writes the typed Luau module, e.g. `src/shared/Config.luau`. |
-
-### `creator`
-
-| Field | Type | Required | What it is |
-| --- | --- | --- | --- |
-| `id` | string | **Yes** | User or group ID, written as a string. |
-| `type` | string | **Yes** | `"user"` or `"group"`. Anything other than `"group"` counts as a user. |
 
 ### `universe`
 
 | Field | Type | Required | What it is |
 | --- | --- | --- | --- |
 | `id` | number | **Yes** | Universe ID. |
-| `name` | string | No | Experience name. |
-| `description` | string | No | Experience description. |
-| `genre` | string | No | Saved locally only. Never sent to Roblox, never checked against a list of valid genres. |
-| `playable_devices` | list of string | No | Any of `computer`, `phone`, `tablet`, `console`, `vr`. Unrecognized values are dropped silently. |
-| `max_players` | number | No | Saved locally only. Never sent to Roblox, because max players is a per-place setting. |
+| `name` | string | No | Experience name. Set on the root place. |
+| `description` | string | No | Experience description. Set on the root place. |
+| `playable_devices` | list of string | No | Any of `computer`, `phone`, `tablet`, `console`, `vr`. Listed devices are turned on, the rest off. An unknown name or an empty list fails validation. |
+| `max_players` | number | No | The root place's server size. |
 | `private_server_cost` | see below | No | Private server pricing. |
 
-Setting any field here other than `id` makes `run` demand `ROBLOX_COOKIE`, including the two local-only fields.
+`name`, `description`, and `max_players` go to the root place (the universe's `rootPlace`) as `displayName`, `description`, and `serverSize`. `playable_devices` and `private_server_cost` go to the universe. `run` reads Roblox first and sends only what differs.
+
+A `genre:` here is ignored with a warning from `run` and `validate`.
 
 #### `private_server_cost` values
 
 | You write | Meaning | What Roblox gets |
 | --- | --- | --- |
-| `"disabled"` (any capitalization) | Private servers off | `allowPrivateServers = false` |
-| `"free"`, `0`, or `"0"` | Free private servers | `allowPrivateServers = true`, `privateServerPrice = 0` |
-| `100` or `"100"` | Costs 100 Robux | `allowPrivateServers = true`, `privateServerPrice = 100` |
+| `"disabled"` (any capitalization) | Private servers off | `privateServerPriceRobux` cleared (`null`) |
+| `"free"`, `0`, or `"0"` | Free private servers | `privateServerPriceRobux = 0` |
+| `100` or `"100"` | Costs 100 Robux | `privateServerPriceRobux = 100` |
 
 Negative numbers and anything above `u32::MAX` are rejected when the file is parsed.
 
@@ -234,7 +229,7 @@ environments:
 
 One key exists only here: `name_prefix`. It goes in front of the experience's name and every place's name in that environment, so `name_prefix: "[dev] "` turns a place named `Lobby` into `[dev] Lobby` in the dev copy. Pass, product, and badge names stay as they are, because game code looks them up by name.
 
-Universe settings carry over like any other key. If the top level sets `universe.name`, a dev run renames the dev copy to match (and needs `ROBLOX_COOKIE`) unless the environment sets its own `name` or `null`.
+Universe settings carry over like any other key. If the top level sets `universe.name`, a dev run renames the dev copy to match unless the environment sets its own `name` or `null`.
 
 ### `game_passes[]`
 
@@ -244,7 +239,7 @@ Universe settings carry over like any other key. If the top level sets `universe
 | `ids` | map of name to number | No | The pass's ID in each environment, like `{ dev: 2222222 }`. `--env` uses it in place of `id`, and writes it for you the same way. |
 | `name` | string | **Yes** | Unique, ignoring capitals. Used as the match key when there's no `id`. |
 | `description` | string | No | Shown on the pass. |
-| `price` | number | No | Robux. Defaults to `0` when created. |
+| `price` | number | No | Robux, at least 1. Left out, the pass is created with no price and isn't for sale. |
 | `icon` | string | No | Filename inside `assets_dir`. |
 | `is_for_sale` | boolean | No | Whether it's buyable. This one is synced. Left out, a new pass with a `price` is created on sale. |
 
@@ -256,7 +251,7 @@ Universe settings carry over like any other key. If the top level sets `universe
 | `ids` | map of name to number | No | The product's ID in each environment. Same as game passes. |
 | `name` | string | **Yes** | Unique, ignoring capitals. |
 | `description` | string | No | Shown on the product. |
-| `price` | number | **Yes** | Robux. Required here, unlike game passes. |
+| `price` | number | **Yes** | Robux, at least 1. Required here, unlike game passes. |
 | `icon` | string | No | Filename inside `assets_dir`. |
 | `is_active` | boolean | No | Read and then ignored. Currently does nothing. |
 
@@ -287,27 +282,27 @@ Roblox cannot list disabled badges. If a disabled badge already exists and your 
 | `file_path` | string | No | | Path to a `.rbxl` or `.rbxlx` file. Needed with `publish: true`. |
 | `publish` | boolean | No | `false` | Only `true` places are touched by `rblxsync publish`. |
 
-`run` syncs `name`, `description`, and `server_size`, and leaves out the ones you don't set. The root place's name and description are the experience's own, so set those in one spot only: under `universe:` (needs `ROBLOX_COOKIE`) or on the root place here (the API key is enough). A run stops if both set the same one.
+`run` syncs `name`, `description`, and `server_size`, and leaves out the ones you don't set. The root place's name, description, and server size are the experience's own, so set each in one spot only: under `universe:` (`name`, `description`, `max_players`) or on the root place here. A run stops if both set the same one.
 
 ### `thumbnails`
 
 | Field | Type | Required | What it is |
 | --- | --- | --- | --- |
-| `game_page` | list | No | The images at the top of your game's page, in the order you list them. Up to 10. |
 | `home_page` | list | No | The tiles players see on the Roblox home page. Up to 5. Two or more turn on thumbnail personalization, which shows each player the one they're most likely to click. |
+
+`game_page` isn't supported, and a config that sets it fails `validate`. The game page endpoints an API key can use belong to Roblox's localization API: they manage translated thumbnail sets (one per language) and refuse the experience's source language, whose set is the one every player without a translation sees. Upload the game page images in the Creator Hub.
 
 Each entry:
 
 | Field | Type | Required | What it is |
 | --- | --- | --- | --- |
 | `image` | string | **Yes** | Image file inside `assets_dir`: `.png`, `.jpg`, `.gif`, `.tga`, or `.bmp`. |
-| `alt_text` | string | No | `game_page` only. Synced when set. Left out, Roblox keeps whatever alt text it has. |
 
 How a run treats them:
 
 - An image is uploaded when its file is new or has changed, checked by SHA-256 against the lock file. Moving or renaming a file doesn't upload it again.
 - A thumbnail rblxsync uploaded is deleted once you remove its entry or change its file. Deleted one in the Creator Hub? The next run uploads it again.
-- Thumbnails rblxsync didn't upload are never deleted. On the game page they stay after yours, count toward the 10, and the run lists them in a warning.
+- Thumbnails rblxsync didn't upload are never deleted.
 - `home_page` updates the personalization Roblox is running, which keeps its statistics, or starts one if none is running. Home page thumbnails it stops serving are only deleted if rblxsync uploaded them.
 - A missing or empty list leaves that set alone. Removing the whole list deletes nothing.
 - An [environment](#environments) gets the same images in its own universe, tracked in its own lock file. Give it its own `thumbnails`, or `thumbnails: null` to leave its thumbnails alone.
@@ -322,15 +317,10 @@ assets_dir: assets/icons
 badge_payment_source: "user"
 output_path: "src/shared/Config.luau"
 
-creator:
-  id: "12345678"
-  type: "user"
-
 universe:
   id: 123456789
   name: "My Awesome Game"
   description: "Updated via rblxsync!"
-  genre: "adventure"
   playable_devices: ["computer", "phone"]
   max_players: 50
   private_server_cost: "disabled"
@@ -374,10 +364,6 @@ places:
     server_size: 12
 
 thumbnails:
-  game_page:
-    - image: "thumbnails/lobby.png"
-      alt_text: "Players gathered in the lobby before a round"
-    - image: "thumbnails/arena.png"
   home_page:
     - image: "thumbnails/home_a.png"
     - image: "thumbnails/home_b.png"
@@ -397,7 +383,6 @@ A composite action. It checks rblxsync out into `.rblxsync-action`, installs sta
 | `command` | No | `run` | `run`, `publish`, `validate`, or `export`. |
 | `config` | No | `rblxsync.yml` | Passed through as `--config`. |
 | `args` | No | `""` | Extra flags, appended **unquoted**, so they split on spaces. Flags only, nothing containing a space. |
-| `roblox_cookie` | No | `""` | `.ROBLOSECURITY` cookie. Becomes `ROBLOX_COOKIE`. Only needed for universe settings. |
 
 ### Example
 
@@ -418,7 +403,6 @@ jobs:
         uses: dig1t/rblxsync@v0.2.3
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
-          roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
           command: run
           config: rblxsync.yml
           args: "--dry-run"
@@ -435,10 +419,9 @@ For an environment, pass it in `args`, for example `args: "--env dev"` in a job 
 | Variable | Required | What it is |
 | --- | --- | --- |
 | `ROBLOX_API_KEY` | Every command except `validate` | Open Cloud API key. Sent as the `x-api-key` header. |
-| `ROBLOX_COOKIE` | Only with universe settings | `.ROBLOSECURITY` cookie, for the `develop.roblox.com` configuration PATCH. |
 | `RUST_LOG` | No | `env_logger` filter. Defaults to `info`. Set it to `debug` when something looks wrong. |
 
-Both secrets are read from `.env` through `dotenvy`. Keep `.env` in `.gitignore`. Never commit or print either value.
+The key is read from `.env` through `dotenvy`. Keep `.env` in `.gitignore`. Never commit or print it.
 
 ---
 
@@ -454,13 +437,13 @@ It sits next to the config file. Each environment has its own, `rblxsync-lock.<n
 | `game_passes` | map of ID to resource | |
 | `developer_products` | map of ID to resource | |
 | `badges` | map of ID to resource | |
-| `thumbnails` | object, optional | `game_page` and `home_page` lists, one entry per thumbnail rblxsync uploaded. Left out until there is one. |
+| `thumbnails` | object, optional | A `home_page` list, one entry per thumbnail rblxsync uploaded. Left out until there is one. |
 
-The universe entry holds `name`, `description`, `genre`, `playable_devices`, `max_players`, and `private_server_cost` (as a string: `disabled`, `0`, or a number).
+The universe entry holds `name`, `description`, `playable_devices`, `max_players`, and `private_server_cost` (as a string: `disabled`, `0`, or a number).
 
-Each thumbnail entry holds `image` (the path it was uploaded from), `id` (the media asset ID on the game page, the homepage thumbnail ID on the home page), and `hash` (SHA-256 of the file when it was uploaded).
+Each thumbnail entry holds `image` (the path it was uploaded from), `id` (the homepage thumbnail ID), and `hash` (SHA-256 of the file when it was uploaded).
 
-Each resource entry holds `name`, and optionally `description`, `price`, `is_for_sale` (game passes), `is_enabled` (badges), `icon_hash` (SHA-256 of the local icon, used to skip unchanged uploads), and `icon_asset_id` (the uploaded image asset ID; badges don't store this).
+Each resource entry holds `name`, and optionally `description`, `price`, `is_for_sale` (game passes), `is_enabled` (badges), `icon_hash` (SHA-256 of the local icon, used to skip unchanged uploads), and `icon_asset_id` (the icon asset Roblox made when it created the pass or product; badges don't store this).
 
 ---
 
@@ -479,7 +462,6 @@ export type Universe = {
 	Id: number,
 	Name: string?,
 	Description: string?,
-	Genre: string?,
 	PlayableDevices: {string}?,
 	MaxPlayers: number?,
 	PrivateServerCost: (number | "disabled")?,
@@ -512,7 +494,6 @@ return {
 		Id = 123456789,
 		Name = "Zombie Diner Tycoon",
 		Description = "Cook burgers. Survive the night shift.",
-		Genre = "adventure",
 		PlayableDevices = { "computer", "phone", "tablet" },
 		MaxPlayers = 12,
 		PrivateServerCost = 100,
@@ -605,20 +586,18 @@ It is not the same as what `export` produces. That one is flat, untyped, and use
 
 rblxsync does not run purely on Open Cloud.
 
-**Universe settings don't use the API key at all.** `develop.roblox.com/v2/.../configuration` is not an Open Cloud endpoint, so those updates go through the `.ROBLOSECURITY` cookie. Some badge operations also use legacy endpoints instead of Open Cloud.
-
-Your `creator` `id` and `type` decide the `creationContext` on uploaded assets (user vs group).
+Universe settings use the API key through Open Cloud. Some badge operations use legacy endpoints instead.
 
 The API key needs these scopes:
 
 | Feature | Scope | Endpoints |
 | --- | --- | --- |
+| Universe settings | `universe` write (`universe:write`) | Devices and private servers: `PATCH /cloud/v2/universes/{uid}?updateMask=...`, after a `GET` of the universe |
 | Game passes | read + write | `GET`/`POST`/`PATCH .../game-passes/v1/universes/{uid}/game-passes` |
 | Developer products | read + write | `GET`/`POST`/`PATCH .../developer-products/v2/universes/{uid}/developer-products` |
 | Badges | read + create/manage | List via `badges.roblox.com/v1/universes/{uid}/badges` and the free quota via `.../free-badges-quota` (no auth); create, update, and icon through the legacy `legacy-badges` / `legacy-publish` endpoints |
-| Assets (icons) | upload | `POST /assets/v1/assets` (multipart), then polled at `GET /assets/v1/{operation}` |
-| Places | read + write (`universe.place:write`) | Settings: `GET` then `PATCH /cloud/v2/universes/{uid}/places/{placeId}?updateMask=...`. Publish: `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
-| Game page thumbnails | `legacy-universe:manage` | Upload, alt text, order, and delete through `legacy-game-internationalization/v1/game-thumbnails/games/{uid}/language-codes/{lang}/...`, where `{lang}` is the experience's source language. Read through `gameinternationalization.roblox.com/v1/source-language/games/{uid}` and `.../v1/game-thumbnails/games/{uid}/images` (no auth) |
+| Places | read + write (`universe.place:write`) | Settings, and the experience's name, description, and server size on the root place: `GET` then `PATCH /cloud/v2/universes/{uid}/places/{placeId}?updateMask=...`. Publish (`universe-places:write`): `POST /universes/v1/{uid}/places/{placeId}/versions?versionType=Published`, the file as `application/octet-stream` (`.rbxl`) or `application/xml` (`.rbxlx`) |
+| Game page thumbnails | none | Not synced. The `legacy-game-internationalization/v1/game-thumbnails/...` endpoints (`legacy-universe:manage`) only manage translated sets and refuse the source language (error 26), and no API-key endpoint reaches the source-language set. A config with `thumbnails.game_page` fails `validate`. |
 | Home page thumbnails | `universe.thumbnail:read` + `universe.thumbnail:write` | `thumbnail-personalization-api/v1/universes/{uid}/thumbnails` to list, upload (then polled at `.../thumbnails/uploads/status`), and delete; `.../personalization` to read, create, and update. Roblox marks this API experimental |
 
 A `429` (too many requests) is retried up to 3 times, waiting as long as the `Retry-After` header says.

@@ -1,8 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::{Client, Method, RequestBuilder};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize};
 use std::path::Path;
-use std::sync::RwLock;
 
 mod thumbnails;
 pub use thumbnails::{GamePageThumbnail, HomePageThumbnail, PersonalizedConfig};
@@ -15,9 +14,14 @@ const GAME_INTL_BASE_URL: &str = "https://gameinternationalization.roblox.com";
 fn truncate_body(text: &str) -> String {
     const MAX_LEN: usize = 1000;
     if text.len() > MAX_LEN {
+        // Cut on a char boundary: slicing inside a multi-byte one panics.
+        let end = (0..=MAX_LEN)
+            .rev()
+            .find(|&i| text.is_char_boundary(i))
+            .unwrap_or(0);
         format!(
             "{}... [truncated, {} bytes total]",
-            &text[..MAX_LEN],
+            &text[..end],
             text.len()
         )
     } else {
@@ -169,14 +173,36 @@ impl RobloxClient {
     /// - `description` (string)
     /// - `rootPlace` (string): resource path `universes/{u}/places/{placeId}`,
     ///   used by `list_places` to recover the root place ID.
-    ///
-    /// Authenticated with `x-api-key` (no cookie required for reads).
+    /// - `desktopEnabled` ... `vrEnabled`, `privateServerPriceRobux` (unset
+    ///   when private servers are off): what `run` diffs universe settings against.
     pub async fn get_universe(&self, universe_id: u64) -> Result<serde_json::Value> {
         let url = format!("{}/cloud/v2/universes/{}", self.base_url, universe_id);
         log::debug!("Fetching universe at: {}", url);
         self.execute(self.request(Method::GET, &url))
             .await
             .context("Failed to fetch universe")
+    }
+
+    /// Change universe settings via Open Cloud (`cloud/v2`, scope
+    /// `universe:write`). `fields` holds only the `Universe` fields to change;
+    /// their names are the update mask. A `null` value clears the field, which
+    /// for `privateServerPriceRobux` turns private servers off: it's sent as a
+    /// mask entry with no value, since Roblox refuses a JSON `null`.
+    pub async fn update_universe(
+        &self,
+        universe_id: u64,
+        fields: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/cloud/v2/universes/{}", self.base_url, universe_id);
+        let mask = fields.keys().cloned().collect::<Vec<_>>().join(",");
+        let mut body = fields.clone();
+        body.retain(|_, value| !value.is_null());
+        self.execute(
+            self.request(Method::PATCH, &url)
+                .query(&[("updateMask", mask)])
+                .json(&body),
+        )
+        .await
     }
 
     // --- Game Passes ---
@@ -546,193 +572,6 @@ impl RobloxClient {
         .await
     }
 
-    // --- Assets (Images) ---
-
-    pub async fn upload_asset(
-        &self,
-        file_path: &Path,
-        name: &str,
-        creator: &crate::config::CreatorConfig,
-    ) -> Result<String> {
-        // 1. Prepare Multipart
-        let url = format!("{}/assets/v1/assets", self.base_url);
-
-        // Check file extension for content type
-        let extension = file_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("png");
-        let content_type = match extension {
-            "png" => "image/png",
-            "jpg" | "jpeg" => "image/jpeg",
-            "bmp" => "image/bmp",
-            "tga" => "image/tga",
-            _ => "image/png", // Default fallback
-        };
-
-        let file_content = tokio::fs::read(file_path).await?;
-        let filename = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        // Create the request struct following Asphalt's approach
-        let creator_web = if creator.creator_type == "group" {
-            WebAssetCreator::Group(WebAssetGroupCreator {
-                group_id: creator.id.clone(),
-            })
-        } else {
-            WebAssetCreator::User(WebAssetUserCreator {
-                user_id: creator.id.clone(),
-            })
-        };
-
-        let request = WebAssetRequest {
-            asset_type: "Image".to_string(),
-            display_name: name.to_string(),
-            description: format!("Uploaded by rblxsync from {}", filename),
-            creation_context: WebAssetRequestCreationContext {
-                creator: creator_web,
-                expected_price: None, // Not used for image assets
-            },
-        };
-
-        let request_json = serde_json::to_string(&request)?;
-
-        // Try Part::bytes instead of stream_with_length
-        // Use stream_with_length like Asphalt does
-        let len = file_content.len() as u64;
-        let file_part =
-            reqwest::multipart::Part::stream_with_length(reqwest::Body::from(file_content), len)
-                .file_name(filename.clone())
-                .mime_str(content_type)?;
-
-        let form = reqwest::multipart::Form::new()
-            .text("request", request_json.clone())
-            .part("fileContent", file_part);
-
-        log::debug!("Asset upload URL: {}", url);
-        log::debug!("Asset upload request JSON: {}", request_json);
-
-        let response = self
-            .client
-            .request(Method::POST, &url)
-            .header("x-api-key", &self.api_key)
-            .multipart(form)
-            .send()
-            .await?;
-
-        let status = response.status();
-        let text = response.text().await?;
-
-        if status.is_success() {
-            // Parse operation response
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct OperationResponse {
-                path: Option<String>,
-                done: Option<bool>,
-                response: Option<OperationResult>,
-            }
-
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct OperationResult {
-                asset_id: Option<String>,
-            }
-
-            let operation: OperationResponse =
-                serde_json::from_str(&text).context("Failed to parse operation response")?;
-
-            log::debug!("Initial operation response: {}", text);
-
-            // If the operation is already done, extract the asset ID
-            if operation.done.unwrap_or(false) {
-                if let Some(resp) = operation.response {
-                    if let Some(asset_id) = resp.asset_id {
-                        return Ok(asset_id);
-                    }
-                }
-            }
-
-            // Extract operation path for polling
-            let operation_path = operation
-                .path
-                .ok_or_else(|| anyhow!("Operation response missing 'path' field"))?;
-
-            // Poll the operation until it completes
-            self.poll_operation(&operation_path).await
-        } else {
-            Err(anyhow!("Asset upload failed: {} - {}", status, text))
-        }
-    }
-
-    /// Polls an asset operation until it completes and returns the asset ID
-    async fn poll_operation(&self, operation_path: &str) -> Result<String> {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct OperationResponse {
-            done: Option<bool>,
-            response: Option<OperationResult>,
-            error: Option<OperationError>,
-        }
-
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct OperationResult {
-            asset_id: Option<String>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct OperationError {
-            message: Option<String>,
-        }
-
-        let url = format!("{}/assets/v1/{}", self.base_url, operation_path);
-        let max_attempts = 30;
-        let poll_interval = std::time::Duration::from_secs(2);
-
-        for attempt in 1..=max_attempts {
-            log::debug!("Polling operation (attempt {}): {}", attempt, url);
-
-            let response = send_with_retry(|| self.request(Method::GET, &url)).await?;
-            let status = response.status();
-            let text = response.text().await?;
-
-            if !status.is_success() {
-                return Err(anyhow!("Failed to poll operation: {} - {}", status, text));
-            }
-
-            log::debug!("Poll response: {}", text);
-
-            let operation: OperationResponse =
-                serde_json::from_str(&text).context("Failed to parse operation poll response")?;
-
-            if let Some(error) = operation.error {
-                let msg = error.message.unwrap_or_else(|| "Unknown error".to_string());
-                return Err(anyhow!("Asset operation failed: {}", msg));
-            }
-
-            if operation.done.unwrap_or(false) {
-                if let Some(resp) = operation.response {
-                    if let Some(asset_id) = resp.asset_id {
-                        log::info!("Asset uploaded successfully with ID: {}", asset_id);
-                        return Ok(asset_id);
-                    }
-                }
-                return Err(anyhow!("Operation completed but no asset ID found"));
-            }
-
-            tokio::time::sleep(poll_interval).await;
-        }
-
-        Err(anyhow!(
-            "Operation polling timed out after {} attempts",
-            max_attempts
-        ))
-    }
-
     // --- Places ---
 
     /// Returns the place IDs belonging to a universe.
@@ -814,19 +653,23 @@ impl RobloxClient {
         file_path: &Path,
     ) -> Result<serde_json::Value> {
         let url = format!(
-            "{}/v1/universes/{}/places/{}/versions",
+            "{}/universes/v1/{}/places/{}/versions",
             self.base_url, universe_id, place_id
         );
 
         let file_content = tokio::fs::read(file_path).await?;
-        let _version_type = "Published"; // or Saved
+        // A binary place (.rbxl) is octet-stream; an XML one (.rbxlx) is XML.
+        let content_type = match file_path.extension().and_then(|e| e.to_str()) {
+            Some("rbxlx") => "application/xml",
+            _ => "application/octet-stream",
+        };
 
         let response = send_with_retry(|| {
             self.client
                 .post(&url)
                 .header("x-api-key", &self.api_key)
                 .query(&[("versionType", "Published")])
-                .header("Content-Type", "application/octet-stream")
+                .header("Content-Type", content_type)
                 .body(file_content.clone())
         })
         .await?;
@@ -850,137 +693,6 @@ impl RobloxClient {
 
         serde_json::from_str(&text)
             .context(format!("Failed to parse publish place response: {}", text))
-    }
-}
-
-/// Client for develop.roblox.com API using .ROBLOSECURITY cookie authentication
-/// This is required for updating universe settings like name and description
-pub struct RobloxCookieClient {
-    client: Client,
-    cookie: String,
-    csrf_token: RwLock<Option<String>>,
-}
-
-impl RobloxCookieClient {
-    pub fn new(cookie: String) -> Self {
-        Self {
-            client: Client::new(),
-            cookie,
-            csrf_token: RwLock::new(None),
-        }
-    }
-
-    /// Make a request with cookie authentication and CSRF token handling
-    async fn request_with_csrf<T: DeserializeOwned>(
-        &self,
-        method: Method,
-        url: &str,
-        body: Option<&serde_json::Value>,
-    ) -> Result<T> {
-        // First attempt
-        let response = self.send_request(method.clone(), url, body).await?;
-
-        // Check if we got a CSRF token error (403 with x-csrf-token header)
-        if response.status() == reqwest::StatusCode::FORBIDDEN {
-            // Get the CSRF token from the response header
-            if let Some(token) = response.headers().get("x-csrf-token") {
-                let token_str = token.to_str().unwrap_or_default().to_string();
-                log::debug!("Got CSRF token from 403 response");
-
-                // Store the token
-                if let Ok(mut csrf) = self.csrf_token.write() {
-                    *csrf = Some(token_str);
-                }
-
-                // Retry the request with the token
-                let retry_response = self.send_request(method, url, body).await?;
-                if retry_response.status() == reqwest::StatusCode::FORBIDDEN {
-                    let text = retry_response.text().await.unwrap_or_default();
-                    return Err(anyhow!(
-                        "develop.roblox.com (cookie) request failed with 403 after CSRF token refresh - \
-                         the .ROBLOSECURITY cookie may be invalid/expired or lack permission for this universe: {}",
-                        text
-                    ));
-                }
-                return self.handle_response(retry_response).await;
-            }
-        }
-
-        self.handle_response(response).await
-    }
-
-    async fn send_request(
-        &self,
-        method: Method,
-        url: &str,
-        body: Option<&serde_json::Value>,
-    ) -> Result<reqwest::Response> {
-        // Snapshot the CSRF token so the request can be rebuilt for 429 retries.
-        let csrf_token = self.csrf_token.read().ok().and_then(|c| c.clone());
-
-        send_with_retry(|| {
-            let mut req = self
-                .client
-                .request(method.clone(), url)
-                .header("Cookie", format!(".ROBLOSECURITY={}", self.cookie))
-                .header("Content-Type", "application/json");
-
-            if let Some(token) = &csrf_token {
-                req = req.header("x-csrf-token", token);
-            }
-
-            if let Some(json_body) = body {
-                req = req.json(json_body);
-            }
-
-            req
-        })
-        .await
-    }
-
-    async fn handle_response<T: DeserializeOwned>(&self, response: reqwest::Response) -> Result<T> {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-
-        log::debug!(
-            "develop.roblox.com (cookie) API response status: {}, body: {}",
-            status,
-            truncate_body(&text)
-        );
-
-        if !status.is_success() {
-            return Err(anyhow!(
-                "develop.roblox.com (cookie) request failed: {} - {}",
-                status,
-                text
-            ));
-        }
-
-        if text.is_empty() || text.trim().is_empty() {
-            if let Ok(val) = serde_json::from_str::<T>("{}") {
-                return Ok(val);
-            }
-        }
-
-        serde_json::from_str(&text).context(format!("Failed to parse response: {}", text))
-    }
-
-    /// Update universe configuration via develop.roblox.com API
-    /// Endpoint: PATCH https://develop.roblox.com/v2/universes/{universeId}/configuration
-    pub async fn update_universe_configuration(
-        &self,
-        universe_id: u64,
-        settings: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let url = format!(
-            "https://develop.roblox.com/v2/universes/{}/configuration",
-            universe_id
-        );
-        log::debug!("Making PATCH request to: {}", url);
-        log::debug!("Request body: {}", settings);
-
-        self.request_with_csrf(Method::PATCH, &url, Some(settings))
-            .await
     }
 }
 
@@ -1047,42 +759,6 @@ pub struct ListResponse<T> {
     pub next_page_cursor: Option<String>,
 }
 
-// Asset upload structs following Asphalt's implementation
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebAssetRequest {
-    asset_type: String,
-    display_name: String,
-    description: String,
-    creation_context: WebAssetRequestCreationContext,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebAssetRequestCreationContext {
-    creator: WebAssetCreator,
-    expected_price: Option<u32>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum WebAssetCreator {
-    User(WebAssetUserCreator),
-    Group(WebAssetGroupCreator),
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebAssetUserCreator {
-    user_id: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebAssetGroupCreator {
-    group_id: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1092,6 +768,13 @@ mod tests {
 
     fn client(server: &MockServer) -> RobloxClient {
         RobloxClient::with_base_url("test-key".to_string(), server.uri())
+    }
+
+    #[test]
+    fn truncate_body_cuts_on_a_char_boundary() {
+        // 3-byte characters: byte 1000 falls inside one.
+        let body = "\u{20ac}".repeat(400);
+        assert!(truncate_body(&body).starts_with(&"\u{20ac}".repeat(333)));
     }
 
     #[tokio::test]
@@ -1276,7 +959,7 @@ mod tests {
     async fn publish_place_non_2xx_returns_err() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/universes/1/places/2/versions"))
+            .and(path("/universes/v1/1/places/2/versions"))
             .respond_with(ResponseTemplate::new(400).set_body_string("bad place"))
             .mount(&server)
             .await;

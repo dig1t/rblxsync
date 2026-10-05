@@ -45,7 +45,6 @@ fn generate_luau_content(state: &SyncState, universe_id: u64) -> String {
     output.push_str("\tId: number,\n");
     output.push_str("\tName: string?,\n");
     output.push_str("\tDescription: string?,\n");
-    output.push_str("\tGenre: string?,\n");
     output.push_str("\tPlayableDevices: {string}?,\n");
     output.push_str("\tMaxPlayers: number?,\n");
     output.push_str("\tPrivateServerCost: (number | \"disabled\")?,\n");
@@ -88,9 +87,6 @@ fn generate_luau_content(state: &SyncState, universe_id: u64) -> String {
                 "\t\tDescription = \"{}\",\n",
                 escape_luau_string(description)
             ));
-        }
-        if let Some(ref genre) = universe.genre {
-            output.push_str(&format!("\t\tGenre = \"{}\",\n", escape_luau_string(genre)));
         }
         if let Some(ref devices) = universe.playable_devices {
             let devices_str: Vec<String> = devices
@@ -244,7 +240,6 @@ mod tests {
             universe: Some(UniverseState {
                 name: Some("Test Game".to_string()),
                 description: Some("A test game".to_string()),
-                genre: None,
                 playable_devices: Some(vec!["computer".to_string(), "phone".to_string()]),
                 max_players: Some(50),
                 private_server_cost: Some("disabled".to_string()),

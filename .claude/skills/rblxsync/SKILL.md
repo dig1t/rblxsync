@@ -5,9 +5,9 @@ description: >-
   Passes, Developer Products, Badges, Thumbnails, Places) from a YAML file via
   the rblxsync CLI / GitHub Action. Use when setting up rblxsync in a Roblox
   project, writing or editing rblxsync.yml, syncing/publishing game passes,
-  developer products, badges, game page or home page thumbnails (thumbnail
+  developer products, badges, home page thumbnails (thumbnail
   personalization), places or universe settings, wiring the generated Config.luau into
-  Luau game code, debugging ROBLOX_API_KEY / ROBLOX_COOKIE errors, or adding
+  Luau game code, debugging ROBLOX_API_KEY errors, or adding
   rblxsync to CI, or when adopting rblxsync on a game that already has live
   monetization. Triggers on "rblxsync", "rblxsync.yml", "sync game passes",
   "Open Cloud metadata", "publish place", "Config.luau", "rblxsync-lock.yml",
@@ -61,7 +61,7 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
   file. `environments.<name>` overrides top-level keys (it must set its own
   `universe.id`; `null` clears an inherited field), and every entry keeps its id
   in that copy under `ids: { <name>: <id> }`. `--env <name>` on any command
-  syncs that copy, with its own lock file `rblxsync-lock.<name>.yml`. Never
+  but `import` syncs that copy, with its own lock file `rblxsync-lock.<name>.yml`. Never
   suggest a second config file per universe; that is what this replaces.
 - **Places** take `name`, `description`, and `server_size`, synced on `run`
   through Open Cloud (only changed fields; Roblox refuses while the place is
@@ -73,8 +73,8 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
 
 1. **Never run a mutating sync without previewing first.** Always do
    `rblxsync run --dry-run` and show the user the diff before `rblxsync run`.
-2. **Never commit, print, or paste `ROBLOX_API_KEY` or `ROBLOX_COOKIE`.** They
-   live in a gitignored `.env` (local) or CI secrets. Treat them like passwords.
+2. **Never commit, print, or paste `ROBLOX_API_KEY`.** It lives in a
+   gitignored `.env` (local) or a CI secret. Treat it like a password.
 3. **`--config` and `--env` are global flags and work on either side of the
    subcommand.** `rblxsync run --env dev` and `rblxsync --env dev run` are the
    same thing. Check which universe a command will touch before running it.
@@ -103,9 +103,8 @@ Run these steps when adding rblxsync to a codebase that doesn't have it yet.
    binaries for Linux, Windows, Intel Mac, and Apple Silicon. See
    `references/cli-and-ci.md`.
 2. **Create `.env`** with `ROBLOX_API_KEY=...` and ensure `.env` is gitignored.
-   Add `ROBLOX_COOKIE=...` *only* if the config will set universe settings (see
-   the cookie gotcha below). Never write real secret values yourself. Leave
-   placeholders and tell the user to fill them in.
+   Never write real secret values yourself. Leave placeholders and tell the
+   user to fill them in.
 3. **Does the experience already have live resources?** If it has game passes,
    products, or badges already, do NOT hand-write them. Run
    `rblxsync import --universe-id <id>` to pull them into `rblxsync.yml` and the
@@ -155,7 +154,7 @@ For the full field-by-field schema, defaults, and every gotcha, read
 | Command | What it does |
 | --- | --- |
 | `rblxsync run [--dry-run] [--allow-paid-badges]` | Sync universe settings + game passes, products, badges, place settings, thumbnails. Default command. Writes `rblxsync-lock.yml` (`rblxsync-lock.<env>.yml` with `--env`) and (if set) `Config.luau`. `--allow-paid-badges` lets badges past the day's free quota cost 100 Robux each. |
-| `rblxsync publish` | Publish `.rbxl` places where `publish: true`. Always publishes (no "save"). Does NOT need the cookie. |
+| `rblxsync publish` | Publish `.rbxl` places where `publish: true`. Always publishes (no "save"). |
 | `rblxsync validate` | Parse + check the YAML (dup names, etc.). No API key, no network. |
 | `rblxsync import [--universe-id ID] [--place-id ID]... [--badge-id ID]...` | Pull a live experience into `rblxsync.yml` AND `rblxsync-lock.yml`, ids included. Use this to adopt rblxsync on an existing game. Remote wins on conflicts; the old config is backed up to `rblxsync.old.yml` first. Places come with name, description, server size. Icons and thumbnails are not imported (a `thumbnails` section carries over as is). Top level only: it refuses `--env` (use `run --env <name>`, which adopts by name). |
 | `rblxsync export [-o PATH] [--lua]` | One-way snapshot of live resources to a flat Luau/Lua table. Read-only. NOT a config you can feed back in (use `import` for that), and NOT the same shape as `Config.luau`. |
@@ -163,47 +162,45 @@ For the full field-by-field schema, defaults, and every gotcha, read
 Full command reference, flags, the GitHub Action, environment variables, and
 Open Cloud permission scopes are in `references/cli-and-ci.md`.
 
-## The cookie gotcha (very common error)
+## Universe settings
 
-`rblxsync run` **hard-fails demanding `ROBLOX_COOKIE`** whenever *any* universe
-field is set, including `genre` and `max_players`, which are local-only and
-never actually call a cookie API. So a config that sets only `genre` still
-requires the cookie even though no cookie request is made.
+Everything runs on the API key. `name`, `description`, and `max_players` go to
+the root place (displayName / description / serverSize); `playable_devices` and
+`private_server_cost` go to the universe. `run` reads Roblox first and sends
+only fields that differ. Never force-resend a private server price: a change
+cancels every private server subscription and Roblox rate-limits it. Don't set
+a root place's name, description, or `server_size` under both `universe:` and
+`places:`; preflight stops the run.
 
-If a user hits "ROBLOX_COOKIE is not set" and doesn't want to provide a cookie,
-the fix is to **remove all `universe.*` fields except `id`** from the config (move
-name/description/etc. tracking elsewhere). Universe *settings* updates use
-`.ROBLOSECURITY` cookie auth against `develop.roblox.com`. An API key alone
-cannot update them. See `references/cli-and-ci.md` for how to obtain the cookie
-safely.
+`genre` is not synced. Roblox allows a genre change only once every 3 months, so
+the user sets it in the Creator Hub. A `genre:` in the config is ignored with a
+warning.
 
 ## Fields that don't sync (surface these, don't silently rely on them)
 
-- **`genre`** and **`max_players`**: tracked in lock/`Config.luau` but **never
-  pushed to Roblox** (`max_players` is a per-place setting).
 - **Developer Product `is_active`**: parsed but **not** synced; has no effect.
 - **Game Pass `is_for_sale`**: this one *is* synced. Left out, a new pass with a
   `price` is created on sale.
 
 ## Thumbnails
 
-`thumbnails.game_page` (up to 10, shown in list order, optional `alt_text`) and
 `thumbnails.home_page` (up to 5; 2+ turn on Roblox's thumbnail personalization)
-list image files in `assets_dir`.
+lists image files in `assets_dir`. `thumbnails.game_page` fails `validate`: the
+game page endpoints an API key reaches are Roblox's localization API, which only
+manages translated sets and refuses the source language (the set everyone sees).
+Point the user at the Creator Hub for game page images.
 
 - An image uploads only when its file is new or changed (SHA-256 vs the lock
   file). Renaming or moving a file doesn't re-upload it.
 - rblxsync deletes a thumbnail it uploaded once its entry is removed or its file
-  changes. It never deletes thumbnails it didn't upload: on the game page they
-  stay after the configured ones, count toward the 10, and every run warns about
-  them. Tell the user, don't delete them for them.
+  changes. It never deletes thumbnails it didn't upload. Tell the user, don't
+  delete them for them.
 - `home_page` updates the running personalization in place (keeps its
   statistics) or starts one. That API is experimental on Roblox's side.
 - A missing or empty list leaves that set alone; removing it deletes nothing.
-- Permissions: `legacy-universe:manage` for the game page,
-  `universe.thumbnail:read` + `universe.thumbnail:write` for the home page.
-- Show the user the `--dry-run` lines (`[UPLOAD]`, `[DELETE]`, `[ORDER]`,
-  `[UPDATE]`) before a real run that deletes thumbnails.
+- Permissions: `universe.thumbnail:read` + `universe.thumbnail:write`.
+- Show the user the `--dry-run` lines (`[UPLOAD]`, `[DELETE]`, `[UPDATE]`)
+  before a real run that deletes thumbnails.
 
 Do not type game code against a Developer Product `IsActive` field. The generated
 `DeveloperProduct` type has no such field (`{ Id, Name, Description, Price }`).
@@ -226,8 +223,7 @@ user's existing Luau to consume rblxsync output.
 ## Adding to CI
 
 A ready-to-use workflow template is in `assets/github-workflow-sync.yml`. Copy it
-to `.github/workflows/`, set repo secrets (`ROBLOX_API_KEY`, optionally
-`ROBLOX_COOKIE`), and pin the action to a published tag (`@v0.2.3`; there is no
+to `.github/workflows/`, set repo secrets (`ROBLOX_API_KEY`), and pin the action to a published tag (`@v0.2.3`; there is no
 moving `@v1`). The CI gotchas (the `args` input word-splits and cannot contain
 spaces; ids and thumbnail uploads written back during a CI run live only on the
 runner, so create new resources and sync new or changed thumbnails locally and

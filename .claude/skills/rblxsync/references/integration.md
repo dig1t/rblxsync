@@ -16,7 +16,6 @@ export type Universe = {
     Id: number,
     Name: string?,
     Description: string?,
-    Genre: string?,
     PlayableDevices: {string}?,
     MaxPlayers: number?,
     PrivateServerCost: (number | "disabled")?,
@@ -39,8 +38,6 @@ Key facts:
 - `DeveloperProduct` is exactly `{ Id, Name, Description, Price }`: there is
   **no** `IsActive` field. Don't type game code against one.
 - `PrivateServerCost` is a bare number for paid/free, or the string `"disabled"`.
-- `Genre` and `MaxPlayers` appear here for reference but were never pushed to
-  Roblox by the sync.
 - Do **not** hand-edit this file; it is overwritten on every `run`. To change its
   format you'd edit the tool's `src/output.rs`, not the output.
 
@@ -93,8 +90,8 @@ which writes `rblxsync.yml` and `rblxsync-lock.yml` directly. Use the
 
 Generated local state mapping live resource IDs to names, prices, flags, and icon
 SHA-256 hashes. Top-level keys: `universe`, `game_passes`, `developer_products`,
-`badges` (maps of resource-id → state), and `thumbnails` (the `game_page` and
-`home_page` uploads rblxsync made: image path, id, and file hash).
+`badges` (maps of resource-id → state), and `thumbnails` (the `home_page`
+uploads rblxsync made: image path, id, and file hash).
 
 - **Commit it.** It's how syncs stay idempotent across machines/CI and how icon
   change-detection works (only re-uploads when the hash differs).

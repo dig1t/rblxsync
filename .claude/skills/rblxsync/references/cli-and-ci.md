@@ -50,8 +50,7 @@ differs from the lock file; a new pass or product is created with its icon, and
 a new pass with a `price` is created on sale unless `is_for_sale: false`.
 Thumbnails upload only when an image is new or changed, and a changed or removed
 one has its old upload deleted. Thumbnails rblxsync didn't upload are left
-alone. The game page is ordered as listed, and `home_page` updates the running
-personalization in place.
+alone, and `home_page` updates the running personalization in place.
 
 - `--dry-run`: previews changes, makes **no** mutating HTTP calls, does **not**
   write state, does **not** write `Config.luau`. Always run this first.
@@ -59,7 +58,11 @@ personalization in place.
   day, GMT) be created at 100 Robux each. Without it, `run` reads and prints the
   quota and stops before changing anything if it would need a paid badge. Only
   pass it with the user's explicit go-ahead.
-- Requires `ROBLOX_COOKIE` if any `universe.*` setting is present (see below).
+- Syncs universe settings: GETs the universe and root place first, sends only
+  the fields that differ (`name` / `description` / `max_players` to the root
+  place, scope `universe.place:write`; `playable_devices` / `private_server_cost`
+  to the universe, scope `universe:write`). An unchanged private server price is
+  never re-sent. A `genre:` is ignored with a warning.
 - Syncs place `name` / `description` / `server_size` (GET, then PATCH only the
   changed fields; scope `universe.place:write`).
 - On success writes `rblxsync-lock.yml` (`rblxsync-lock.<env>.yml` with
@@ -82,7 +85,7 @@ name, PATCHes to the config, writes `ids.<name>`). Place ids go in by hand.
 ### `publish`
 
 Publishes every place with `publish: true` (always a **Published** version, no
-"Saved" option). Does NOT need the cookie. Per-place errors are logged but not
+"Saved" option). Per-place errors are logged but not
 fatal; a place with a missing `file_path` is skipped and the rest continue.
 Publishing makes the place live; confirm with the user.
 
@@ -136,39 +139,29 @@ know about yet.
 | Variable | Required | Notes |
 | --- | --- | --- |
 | `ROBLOX_API_KEY` | Yes (all but `validate`) | Open Cloud API key, sent as `x-api-key`. |
-| `ROBLOX_COOKIE` | Conditional | `.ROBLOSECURITY` cookie. Required only when universe settings are defined. |
 | `RUST_LOG` | No | `env_logger` filter; defaults to `info`. Use `RUST_LOG=debug` to troubleshoot. |
 
-Both secrets load from a gitignored `.env` via `dotenvy`. **Never commit or print
-them.** Add to `.env`:
+The key loads from a gitignored `.env` via `dotenvy`. **Never commit or print
+it.** Add to `.env`:
 
 ```bash
 ROBLOX_API_KEY=your_api_key_here
-ROBLOX_COOKIE=your_roblosecurity_cookie_here   # only if syncing universe settings
 ```
-
-### Getting the `.ROBLOSECURITY` cookie (only if needed)
-
-1. Log into roblox.com in a browser.
-2. DevTools (F12) → Application → Cookies → copy the value of `.ROBLOSECURITY`.
-
-Anyone with this cookie can access the account. Treat it like a password, store
-it only in `.env` or a CI secret, never in the repo or chat. Don't fetch or echo
-it yourself; instruct the user to place it.
 
 ## Open Cloud API key permissions
 
-Universe **settings** updates do **not** use the API key; they use cookie auth
-against `develop.roblox.com`. The API key needs these scopes:
+The API key needs these scopes. Some badge operations use legacy endpoints
+instead of Open Cloud.
+
 
 | Feature | Scope | Endpoint(s) |
 | --- | --- | --- |
+| Universe settings | `universe` write (`universe:write`) | Devices and private servers: `GET` then `PATCH /cloud/v2/universes/{uid}?updateMask=...` |
 | Game Passes | read + write | `game-passes/v1/universes/{uid}/game-passes` |
 | Developer Products | read + write | `developer-products/v2/universes/{uid}/developer-products` |
 | Badges | read + create/manage | list and free quota via `badges.roblox.com`; create/update/icon via legacy `legacy-badges` / `legacy-publish` |
-| Assets (icons) | upload | `POST /assets/v1/assets` (multipart), polled at `GET /assets/v1/{operation}` |
-| Places | read + write (`universe.place:write`) | Settings: `GET`/`PATCH /cloud/v2/universes/{uid}/places/{placeId}?updateMask=...`; publish: `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
-| Game page thumbnails | `legacy-universe:manage` | `legacy-game-internationalization/v1/game-thumbnails/games/{uid}/language-codes/{lang}/...` (upload, alt text, order, delete); listed via `gameinternationalization.roblox.com` (no auth) |
+| Places | read + write (`universe.place:write`) | Settings, and the experience's name / description / server size on the root place: `GET`/`PATCH /cloud/v2/universes/{uid}/places/{placeId}?updateMask=...`; publish (`universe-places:write`): `POST /universes/v1/{uid}/places/{placeId}/versions?versionType=Published` |
+| Game page thumbnails | none | Not synced: the localization endpoints only manage translated sets and refuse the source language (error 26). `thumbnails.game_page` fails `validate`. |
 | Home page thumbnails | `universe.thumbnail:read` + `universe.thumbnail:write` | `thumbnail-personalization-api/v1/universes/{uid}/thumbnails` and `.../personalization` (experimental) |
 
 `429` responses are retried up to 3 times honoring `Retry-After`.
@@ -189,7 +182,6 @@ builds `--release`, then runs
 | `command` | No | `run` | `run` / `publish` / `validate` / `export` / `import`. |
 | `config` | No | `rblxsync.yml` | Passed as `--config`. |
 | `args` | No | `""` | Extra flags, appended **unquoted**. |
-| `roblox_cookie` | No | `""` | `.ROBLOSECURITY` → `ROBLOX_COOKIE`. Only for universe settings. |
 
 > **`args` word-splits and cannot be quoted.** Multiple flags like
 > `--dry-run --foo` split correctly, but **any single argument containing a space
@@ -205,6 +197,6 @@ builds `--release`, then runs
 > both files, then let CI do the updates. Thumbnails have no name to match by,
 > so a CI-only setup uploads them again on every run.
 
-Store `ROBLOX_API_KEY` (and `ROBLOX_COOKIE` if needed) under
+Store `ROBLOX_API_KEY` under
 **Settings → Secrets and variables → Actions**. See
 `assets/github-workflow-sync.yml` for a copy-paste workflow.

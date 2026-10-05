@@ -11,33 +11,23 @@ Roblox gives every game 5 free badges per day (GMT). Before it changes anything,
 
 Set `badge_payment_source` to `"user"` or `"group"` so Roblox knows which wallet a paid badge comes out of. Without it, badge creation fails.
 
-## Universe settings need a cookie
+## Set the name, description, and server size in one spot
 
-rblxsync changes everything under `universe` through a Roblox website endpoint that signs in with your browser cookie. If you set *any* field under `universe` besides `id`, add this to `.env`:
+`universe:` sets the root place's name, description, and (with `max_players`) server size. If the root place is also listed under `places:` with the same field, a run stops. Set each one under `universe:` or on the place, not both.
 
-```bash
-ROBLOX_COOKIE=your_roblosecurity_cookie
-```
+Earlier versions only wrote `max_players` into `Config.luau`. Now it changes the root place's server size, so check it matches your real one before you upgrade.
 
-To get it: log into roblox.com, press F12, go to Application → Cookies, and copy `.ROBLOSECURITY`.
+## Changing the private server price cancels subscriptions
 
-Guard it like your password. Anyone with that string is logged in as you. Never commit it, never paste it anywhere public.
+Roblox cancels every private server subscription when the price changes, and rate-limits price changes. rblxsync reads your current settings first and only sends a price that differs, so an unchanged price is never re-sent.
 
-## You can skip the cookie for the name and description
+## Set the genre yourself
 
-Your game's name and description are its starting place's. Leave them out of `universe:` and set `name` and `description` on the starting place under `places:` instead, and the API key is enough. Set them in one spot only: a run stops if both set the same field.
+Roblox only lets you change a genre once every 3 months, so rblxsync doesn't touch it. Set it in the Creator Hub. A `genre:` left in `universe:` is ignored with a warning.
 
 ## A place open in Team Create can't be changed
 
 Roblox refuses place updates during a Team Create session. rblxsync only sends a place's settings when they differ from what Roblox has, so this only comes up after you change one. Close the session and run again.
-
-## The cookie rule is greedy
-
-It kicks in even for `genre` and `max_players`, which rblxsync only tracks locally and never sends anywhere. Setting just `genre` will still stop and ask for a cookie.
-
-## `genre` and `max_players` never reach Roblox
-
-They get saved to the lock file and your `Config.luau`, and that's it. Change them in Studio or the Creator Hub.
 
 ## `is_active` on developer products does nothing
 
@@ -45,7 +35,11 @@ rblxsync reads it and ignores it. Game pass `is_for_sale` does work, and a new p
 
 ## rblxsync only deletes thumbnails it uploaded
 
-Images already on your game page stay after yours, still count toward the 10, and every run lists them in a warning. Delete them in the Creator Hub if you don't want them. Leaving out the `thumbnails` section entirely leaves your thumbnails alone.
+Delete the others in the Creator Hub if you don't want them. Leaving out the `thumbnails` section entirely leaves your thumbnails alone.
+
+## The images at the top of your game's page aren't synced
+
+Roblox only lets an API key change translated copies of them (one set per language), never the set everyone sees, so upload those in the Creator Hub. A `thumbnails.game_page` in your config fails `validate`.
 
 ## Home page thumbnails use an experimental API
 

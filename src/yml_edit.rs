@@ -173,6 +173,11 @@ fn is_top_level_content(line: &str) -> bool {
     if line.trim().is_empty() {
         return false;
     }
+    // A sequence may sit at its key's own indent (serde_yaml, and so
+    // `import`, writes it that way), so a column-0 `- ` is still an item.
+    if line.starts_with("- ") || line == "-" {
+        return false;
+    }
     // A top-level comment is ambiguous; treat it as still inside the section so
     // trailing comments stay attached. Only real keys terminate.
     !line.trim_start().starts_with('#')
@@ -196,17 +201,15 @@ fn parse_key_value(fragment: &str, key: &str) -> Option<String> {
     Some(unquote(value))
 }
 
-/// Strip a single matching pair of surrounding quotes (double or single).
+/// A scalar's text: what's inside its quotes (double or single), or, unquoted,
+/// everything before a ` # comment`.
 fn unquote(value: &str) -> String {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2 {
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return value[1..value.len() - 1].to_string();
+    for quote in ['"', '\''] {
+        if let Some(end) = value.strip_prefix(quote).and_then(|v| v.find(quote)) {
+            return value[1..1 + end].to_string();
         }
     }
-    value.to_string()
+    split_comment(value).0.trim_end().to_string()
 }
 
 /// Does the item spanning `[item_start, item_end)` already contain `key:` either
@@ -267,9 +270,11 @@ fn owned(lines: &[&str]) -> Vec<String> {
 /// Join edited lines back into a file, keeping the original trailing newline
 /// (which `str::lines` drops).
 fn rejoin(yaml: &str, lines: Vec<String>) -> String {
-    let mut result = lines.join("\n");
+    // `str::lines` drops `\r` too, so a CRLF file goes back as CRLF.
+    let newline = if yaml.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut result = lines.join(newline);
     if yaml.ends_with('\n') {
-        result.push('\n');
+        result.push_str(newline);
     }
     result
 }
@@ -473,6 +478,43 @@ badges:
         assert_eq!(
             out,
             "game_passes:\n  - name: VIP Pass\n    id: 3\n    price: 100\n"
+        );
+    }
+
+    #[test]
+    fn matches_name_followed_by_a_comment() {
+        let yaml = "game_passes:\n  - name: VIP Pass   # on sale\n    price: 100\n  - name: \"Pass #2\"  # quoted\n    price: 5\n";
+        let out = insert_id(yaml, "game_passes", "VIP Pass", 1).unwrap();
+        assert!(out.contains("  - name: VIP Pass   # on sale\n    id: 1\n"));
+        let out = insert_id(&out, "game_passes", "Pass #2", 2).unwrap();
+        assert!(out.contains("  - name: \"Pass #2\"  # quoted\n    id: 2\n"));
+    }
+
+    #[test]
+    fn edits_a_file_written_by_import() {
+        // serde_yaml puts list items at the key's own indent.
+        let yaml = "game_passes:\n- id: 42\n  name: VIP\n  price: 100\n- name: Coins\n  price: 5\nbadges:\n- name: Coins\n";
+        let out = insert_env_id(yaml, "game_passes", "VIP", "dev", 7).unwrap();
+        assert!(
+            out.contains("- id: 42\n  ids: { dev: 7 }\n  name: VIP\n"),
+            "{}",
+            out
+        );
+        let out = insert_id(&out, "game_passes", "Coins", 9).unwrap();
+        assert!(
+            out.contains("- name: Coins\n  id: 9\n  price: 5\nbadges:\n- name: Coins\n"),
+            "{}",
+            out
+        );
+    }
+
+    #[test]
+    fn keeps_crlf_line_endings() {
+        let yaml = "game_passes:\r\n  - name: VIP\r\n    price: 100\r\n";
+        let out = insert_id(yaml, "game_passes", "VIP", 3).unwrap();
+        assert_eq!(
+            out,
+            "game_passes:\r\n  - name: VIP\r\n    id: 3\r\n    price: 100\r\n"
         );
     }
 

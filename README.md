@@ -41,7 +41,7 @@ products, a test place, and other people touching the game.
 | Set up a test universe | Recreate every pass, product, and badge by hand, then juggle two sets of IDs in your code | Add its universe ID under `environments:` in the same file, then `rblxsync run --env dev` |
 | Find out who dropped the VIP price last week | There's no history. Go ask people. | `git log -p rblxsync.yml` |
 | Undo a bad edit | Remember what the description used to say, retype it, hope | `git revert`, run again |
-| Swap the game page thumbnails for an update | Upload each image, drag them into order, retype the alt text, delete the old ones | Replace the files, run it |
+| Swap the home page thumbnails for an update | Upload each image, point the personalization at the new ones, delete the old ones | Replace the files, run it |
 | Add 12 badges for an event | 12 forms. Past the 5 free each day, every one costs 100 Robux, and a typo means a badge you can't take back | 12 entries, checked with `--dry-run`. It makes the free ones and stops before spending a single Robux |
 | Show a new teammate how monetization works | Hand over a login and hope | They read one file |
 
@@ -53,6 +53,33 @@ happens.
 
 Your config sits in git next to your code, so a price change is a line in a pull
 request someone can review, not a form somebody filled in at 2am.
+
+## API key scopes (the one thing you set up yourself)
+
+rblxsync needs an Open Cloud API key, and the key only works for what you
+tick when you make it. A missing scope shows up later as a `403` halfway
+through a run, so add all of these up front.
+
+Make the key at [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials).
+For each row, click **Add API System**, pick the system, choose your
+experience, and tick the operations:
+
+| API system | Operations | What it's for |
+|---|---|---|
+| `game-pass` | `read`, `write` | Game passes |
+| `developer-product` | `read`, `write` | Developer products |
+| `legacy-universe.badge` | `write`, `manage-and-spend-robux` | Updating and creating badges (`manage-and-spend-robux` is required even for free ones) |
+| `legacy-badge` | `manage` | Badge icons |
+| `universe` | `write` | Universe settings: devices and private servers |
+| `universe.place` | `write` | Place name, description, and server size |
+| `universe-places` | `write` | `rblxsync publish` |
+| `universe.thumbnail` | `read`, `write` | Home page thumbnails |
+
+Then, under **Accepted IP Addresses**, add `0.0.0.0/0` (or your own IP) and
+save. Copy the key; Roblox only shows it once.
+
+Skip a row only if you never use that feature. The API key is all rblxsync
+needs: no browser cookie, no password.
 
 ## Start here (about 5 minutes)
 
@@ -91,11 +118,7 @@ rblxsync --version
 
 An API key is a password that lets rblxsync talk to Roblox for you.
 
-1. Go to [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials)
-2. Click **Create API Key**
-3. Give it access to your experience, and turn on read + write for **Game Passes**, **Developer Products**, **Badges**, **Assets**, and **Places**. Syncing thumbnails also needs `legacy-universe:manage` (game page) and `universe.thumbnail:read` + `universe.thumbnail:write` (home page)
-4. Under IP access, put `0.0.0.0/0` if you're not sure what your IP is
-5. Save it and copy the key
+Follow [API key scopes](#api-key-scopes-the-one-thing-you-set-up-yourself) above. Every scope in that table, on your experience, then copy the key.
 
 ### 3. Put the key in a `.env` file
 
@@ -164,7 +187,7 @@ Don't retype everything. Pull it down instead:
 rblxsync import --universe-id 123456789
 ```
 
-This writes a `rblxsync.yml` from whatever is already on Roblox. Your old config gets saved as `rblxsync.old.yml` first, so nothing is lost. Places come in with their names and server sizes.
+This writes a `rblxsync.yml` from whatever is already on Roblox. Your old config gets saved as `rblxsync.old.yml` first, so nothing is lost. Places come in with their names and server sizes. Devices, the private server price, and `max_players` are refreshed from Roblox when your config already sets them, so a run right after an import won't undo a change made in the Creator Hub.
 
 Two things it can't see on its own:
 
@@ -194,7 +217,6 @@ export type Universe = {
 	Id: number,
 	Name: string?,
 	Description: string?,
-	Genre: string?,
 	PlayableDevices: {string}?,
 	MaxPlayers: number?,
 	PrivateServerCost: (number | "disabled")?,
@@ -227,7 +249,6 @@ return {
 		Id = 123456789,
 		Name = "Zombie Diner Tycoon",
 		Description = "Cook burgers. Survive the night shift.",
-		Genre = "adventure",
 		PlayableDevices = { "computer", "phone", "tablet" },
 		MaxPlayers = 12,
 		PrivateServerCost = 100,
@@ -336,7 +357,6 @@ game_passes:
 places:
   - place_id: 555555555
     ids: { dev: 666666666 }
-    name: "Lobby"
     file_path: build/lobby.rbxl
     publish: true
 ```
@@ -385,15 +405,14 @@ Only `universe.id` is required. Everything else is optional.
 
 | Section | What it's for |
 |---------|---------------|
-| `universe` | Your universe ID, plus name, description, genre, devices, max players, private server price. |
+| `universe` | Your universe ID, plus name, description, devices, max players, private server price. |
 | `game_passes` | One entry per game pass. |
 | `developer_products` | One entry per developer product. `price` is required here. |
 | `badges` | One entry per badge. New badges are free up to 5 a day, then cost **100 Robux** each. |
 | `places` | Your places: name, description, players per server, and the file `rblxsync publish` uploads. |
-| `thumbnails` | Images for your game page (up to 10, in order, with alt text) and the home page (up to 5). |
+| `thumbnails` | Images for your home page tiles (up to 5). |
 | `environments` | Other copies of the game, like a dev universe. See [A dev copy of your game](#a-dev-copy-of-your-game). |
 | `assets_dir` | Folder your icon and thumbnail images live in. Defaults to `assets`. |
-| `creator` | Who owns uploaded icons. Only needed if you use icons. |
 | `badge_payment_source` | `"user"` or `"group"`. Needed to create badges. The wallet a paid badge comes out of. |
 | `output_path` | Where to write the Luau file with all your IDs. |
 
@@ -409,50 +428,40 @@ For each pass, product, or badge:
 
 With `--env dev`, the ID it uses and writes is the entry's `ids: { dev: ... }`.
 
-That write-back happens the moment the resource is created or found, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate.
+That write-back happens the moment the resource is created or found, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate. The lock file is saved after every change too, and a run that stops on an error still writes `Config.luau`.
 
 Places can't be created through the API, so a place needs its ID in the config. rblxsync reads each place first and only sends the settings that changed.
 
-Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A new pass or product gets its icon in the same call that creates it.
+Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A pass or product gets its icon in the same call that creates or updates it.
 
 Thumbnails use the checksum too:
 
 ```yaml
 thumbnails:
-  game_page:            # the top of your game's page, in this order
-    - image: "thumbnails/lobby.png"
-      alt_text: "Players gathered in the lobby before a round"
-    - image: "thumbnails/arena.png"
   home_page:            # home page tiles; two or more turn on personalization
     - image: "thumbnails/home_a.png"
     - image: "thumbnails/home_b.png"
 ```
 
-A new or changed image gets uploaded and the old upload deleted. The game page is put in the order you listed. The home page's running personalization gets updated in place, so it keeps its statistics.
+A new or changed image gets uploaded and the old upload deleted. The home page's running personalization gets updated in place, so it keeps its statistics.
 
 ## Things that will trip you up
 
 **Badges are free 5 a day, then 100 Robux each.** Roblox gives every game 5 free badges per day (GMT). Before it changes anything, rblxsync reads how many are left today and prints it. It creates badges for free while they last. If a run needs more, it stops before touching anything unless you pass `--allow-paid-badges`. Each badge goes out with the price rblxsync expects, so Roblox refuses it rather than charge a different amount. Set `badge_payment_source` to `"user"` or `"group"` so Roblox knows which wallet a paid badge comes out of.
 
-**Universe settings need a cookie, not just an API key.** rblxsync changes everything under `universe` through a Roblox website endpoint that signs in with your browser cookie. If you set *any* field under `universe` besides `id`, you also need this in `.env`:
+**`universe.name`, `description`, and `max_players` belong to your starting place.** rblxsync sets them as that place's name, description, and server size. You can set them under `universe:` or on the starting place under `places:`, but only in one spot: a run stops if both set the same field. Earlier versions only wrote `max_players` into `Config.luau`, so check it matches your real server size before you upgrade.
 
-```bash
-ROBLOX_COOKIE=your_roblosecurity_cookie
-```
+**Changing the private server price cancels every subscription.** Roblox does that, not rblxsync, and it also limits how often you can change the price. rblxsync reads the current price first and only sends `private_server_cost` when it's different.
 
-To get it: log into roblox.com, press F12, go to Application → Cookies, and copy `.ROBLOSECURITY`. Guard it like your password. Anyone with that string is logged in as you.
-
-**You can skip the cookie for the name and description.** Your game's name and description are its starting place's. Leave them out of `universe:` and set `name` and `description` on the starting place under `places:` instead, and the API key is enough. Set them in one spot only: a run stops if both set the same field.
+**rblxsync doesn't set your genre.** Roblox only lets you change it once every 3 months, so pick it yourself in the Creator Hub. A `genre:` left in `rblxsync.yml` is ignored with a warning.
 
 **A place open in Team Create can't be changed.** Roblox refuses place updates during a Team Create session. rblxsync only sends a place's settings when they differ from what Roblox has, so this only comes up after you change one. Close the session and run again.
 
-**The cookie rule is greedy.** It kicks in even for `genre` and `max_players`, which rblxsync only tracks locally and never sends anywhere. Setting just `genre` will still stop and ask for a cookie.
-
-**`genre` and `max_players` never reach Roblox.** They get saved to the lock file and your `Config.luau`, and that's it. Change them in Studio or the Creator Hub.
-
 **`is_active` on developer products does nothing.** rblxsync reads it and ignores it. Game pass `is_for_sale` does work, and a new pass with a price goes on sale unless you set `is_for_sale: false`.
 
-**rblxsync only deletes thumbnails it uploaded.** Images already on your game page stay after yours, still count toward the 10, and every run lists them in a warning. Delete them in the Creator Hub if you don't want them. Leaving out the `thumbnails` section entirely leaves your thumbnails alone.
+**rblxsync only deletes thumbnails it uploaded.** Delete the others in the Creator Hub if you don't want them. Leaving out the `thumbnails` section entirely leaves your thumbnails alone.
+
+**The images at the top of your game's page aren't synced.** Roblox only lets an API key change translated copies of them (one set per language), never the set everyone sees, so upload those in the Creator Hub. A `thumbnails.game_page` in your config fails `validate`.
 
 **Home page thumbnails use an API Roblox calls experimental.** If Roblox changes it, `home_page` can break before the rest of rblxsync does.
 
@@ -488,7 +497,7 @@ jobs:
           command: run
 ```
 
-Put your key in the repo under **Settings → Secrets and variables → Actions**, named `ROBLOX_API_KEY`. Add `ROBLOX_COOKIE` too if you're changing universe settings.
+Put your key in the repo under **Settings → Secrets and variables → Actions**, named `ROBLOX_API_KEY`.
 
 Pin the version like `@v0.2.3`. There's no `@v1` tag yet, so don't use one.
 
@@ -500,7 +509,6 @@ Whatever the action writes into `rblxsync.yml` and `rblxsync-lock.yml` stays on 
 | `command` | No | `run` | `run`, `publish`, `validate`, or `export`. |
 | `config` | No | `rblxsync.yml` | Path to your config file. |
 | `args` | No | `""` | Extra flags, like `--dry-run`. |
-| `roblox_cookie` | No | `""` | Your `.ROBLOSECURITY` cookie. |
 
 One catch with `args`: it gets split on spaces with no way to quote anything. Stick to plain flags like `--dry-run`. Anything with a space in it will break apart.
 

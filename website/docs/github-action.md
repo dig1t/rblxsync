@@ -36,7 +36,6 @@ Your API key can't go in the workflow file, it goes in the repo's secret store.
 Open your repo, then **Settings → Secrets and variables → Actions → New repository secret**. Add:
 
 - `ROBLOX_API_KEY`
-- `ROBLOX_COOKIE`, but only if you're changing universe settings
 
 ## Pin the version
 
@@ -50,7 +49,6 @@ Use a tag that exists, like `@v0.2.3`. There's no `@v1` tag yet, so don't refere
 | `command` | No | `run` | `run`, `publish`, `validate`, or `export`. |
 | `config` | No | `rblxsync.yml` | Path to your config file. |
 | `args` | No | `""` | Extra flags, like `--dry-run`. |
-| `roblox_cookie` | No | `""` | Your `.ROBLOSECURITY` cookie. |
 
 One catch with `args`: it gets split on spaces with no way to quote anything. Stick to plain flags like `--dry-run`. Anything with a space in it will break apart.
 
@@ -86,7 +84,6 @@ jobs:
       - uses: dig1t/rblxsync@v0.2.3
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
-          roblox_cookie: ${{ secrets.ROBLOX_COOKIE }}
           command: run
 ```
 

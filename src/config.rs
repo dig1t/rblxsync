@@ -102,8 +102,6 @@ impl Serialize for PrivateServerCost {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub api_key: String,
-    /// .ROBLOSECURITY cookie for develop.roblox.com API (required for universe settings)
-    pub roblox_cookie: Option<String>,
 }
 
 impl Config {
@@ -113,12 +111,7 @@ impl Config {
         let api_key =
             env::var("ROBLOX_API_KEY").context("ROBLOX_API_KEY environment variable not set")?;
 
-        let roblox_cookie = env::var("ROBLOX_COOKIE").ok();
-
-        Ok(Self {
-            api_key,
-            roblox_cookie,
-        })
+        Ok(Self { api_key })
     }
 }
 
@@ -128,7 +121,10 @@ impl Config {
 pub struct RblxSyncConfig {
     #[serde(default = "default_assets_dir")]
     pub assets_dir: String,
-    pub creator: Option<CreatorConfig>,
+    /// Ignored: icons go up with the pass or product they belong to, so
+    /// there's no asset to own. Parsed only so `validate` can warn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator: Option<Value>,
     pub universe: UniverseConfig,
     /// Other universes the same entries sync to (a dev or staging copy of the
     /// game), by name. Each one overrides top-level keys for `--env <name>`;
@@ -162,19 +158,15 @@ fn default_assets_dir() -> String {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct CreatorConfig {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub creator_type: String, // "user" or "group"
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct UniverseConfig {
     /// Universe ID (required)
     pub id: u64,
     pub name: Option<String>,
     pub description: Option<String>,
-    pub genre: Option<String>,
+    /// Ignored: Roblox lets a genre change only once every 3 months, so it's
+    /// set in the Creator Hub. Parsed only so `validate` can warn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<Value>,
     pub playable_devices: Option<Vec<String>>,
     pub max_players: Option<u32>,
     /// Private server cost: "disabled", 0 (free), or a positive number (Robux cost)
@@ -186,7 +178,6 @@ impl UniverseConfig {
     pub fn has_settings(&self) -> bool {
         self.name.is_some()
             || self.description.is_some()
-            || self.genre.is_some()
             || self.playable_devices.is_some()
             || self.max_players.is_some()
             || self.private_server_cost.is_some()
@@ -404,7 +395,25 @@ impl RblxSyncConfig {
                 self.universe.id
             )
         })?;
-        check_environment(env, overlay, self.universe.id)?;
+        let universe_id = check_environment(env, overlay, self.universe.id)?;
+        // Two environments on one universe would each take the other's
+        // uploads for someone else's and never delete them.
+        let shared = self.environments.iter().find(|(name, other)| {
+            name.as_str() != env
+                && other
+                    .get("universe")
+                    .and_then(|u| u.get("id"))
+                    .and_then(Value::as_u64)
+                    == Some(universe_id)
+        });
+        if let Some((other, _)) = shared {
+            bail!(
+                "environments.{} and environments.{} both use universe {}",
+                other,
+                env,
+                universe_id
+            );
+        }
         let mut overlay = overlay.clone();
         let prefix = match overlay
             .as_mapping_mut()
@@ -564,7 +573,6 @@ mod tests {
          \x20 id: 123456789\n\
          \x20 name: \"My Awesome Game\"\n\
          \x20 description: \"Updated via rblxsync!\"\n\
-         \x20 genre: \"adventure\"\n\
          \x20 playable_devices: [\"computer\", \"phone\"]\n\
          \x20 max_players: 50\n\
          \x20 private_server_cost: \"disabled\"\n\
@@ -598,7 +606,7 @@ mod tests {
         assert_eq!(config.badges.len(), 1);
         assert_eq!(config.places.len(), 1);
         assert!(config.places[0].publish);
-        assert_eq!(config.creator.as_ref().unwrap().creator_type, "user");
+        assert!(config.creator.is_some());
     }
 
     #[test]
@@ -723,6 +731,10 @@ mod tests {
             ),
             ("  ../dev:\n    universe:\n      id: 2\n", "letters, digits"),
             ("  dev: 2\n", "top-level keys"),
+            (
+                "  dev:\n    universe:\n      id: 2\n  staging:\n    universe:\n      id: 2\n",
+                "both use universe 2",
+            ),
         ] {
             let config = env_config(overlay);
             let env = config.environments.keys().next().unwrap().clone();

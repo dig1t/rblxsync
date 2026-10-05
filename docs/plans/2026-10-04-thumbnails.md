@@ -1,6 +1,10 @@
 # Experience thumbnails
 
-Status: done. Merged with the environments / place settings work:
+Status: home page done and verified live. Game page refused at `validate`:
+the endpoints below are Roblox's localization API, which manages translated
+sets and refuses the source language (error 26), so the set every player
+sees can't be changed with an API key. See `2026-10-04-live-verification.md`.
+Merged with the environments / place settings work:
 `ThumbnailPlan` carries the run's environment, so each environment's uploads
 go to its own `rblxsync-lock.<env>.yml`. An environment inherits the top-level
 `thumbnails` unless it overrides them (`thumbnails: null` skips them there).
@@ -71,9 +75,10 @@ or renaming a file doesn't re-upload it.
 - The 10 cap is on images. Of 300 sampled live games, five show 10 images
   plus a preview video in `/v2/games/{id}/media`, so the video isn't counted.
 - A dry run against live Roblox read the public game page endpoints correctly
-  (Brookhaven: 9 images in page order). The home page endpoints are untested
-  live: the API key in the local `.env` gets `401 Invalid API Key` from every
-  apis.roblox.com call, including the existing developer products listing.
+  (Brookhaven: 9 images in page order). Live writes against a throwaway
+  experience: home page upload, personalization create, update (2 to 2, then
+  2 to 1) and stale-upload delete all work. Game page uploads in the source
+  language get error 26; the same upload in `es` works.
 
 ## Steps
 
