@@ -8,7 +8,7 @@ title: API Reference
 
 Every command, flag, config field, and file format in one place. If you just want to sync your first game pass, start with the [quick start](/quick-start) instead.
 
-`rblxsync` reads a YAML file and makes your Roblox experience match it: universe settings, game passes, developer products, badges, and places.
+`rblxsync` reads a YAML file and makes your Roblox experience match it: universe settings, game passes, developer products, badges, thumbnails, and places.
 
 ---
 
@@ -53,6 +53,8 @@ That write-back is a surgical line insert. Your comments and formatting survive 
 
 **Badge cost.** Roblox gives each game 5 free badges per day (GMT), then charges 100 Robux a badge. When a run would create badges, it first reads how many free ones are left today and prints it. Badges past that count need `--allow-paid-badges`, or the run stops before changing anything. Each create sends the cost rblxsync expects (`expectedCost`, 0 while free ones last), and Roblox refuses, without charging, a badge whose real cost is different.
 
+**Thumbnails** are worked out before anything changes. A missing image file, or a game page that would end up holding more than 10 images, stops the run with no changes made. Each upload and delete is written to the lock file as it happens. See [`thumbnails`](#thumbnails).
+
 **Other behavior**
 
 - A new game pass with a `price` is created on sale, unless its `is_for_sale` is `false`.
@@ -93,7 +95,7 @@ Pulls an existing experience down into `rblxsync.yml` and `rblxsync-lock.yml`. U
 
 Before writing, your existing `rblxsync.yml` is renamed to `rblxsync.old.yml`, then `rblxsync.old1.yml`, `.old2.yml` and so on if that name is taken. Nothing is overwritten without a backup.
 
-Icons are not imported.
+Icons and thumbnails are not imported. A `thumbnails` section and its lock entries carry over unchanged.
 
 ### `validate`
 
@@ -106,6 +108,7 @@ Checks the config without contacting Roblox. It does **not** need `ROBLOX_API_KE
 1. The config file exists.
 2. It parses as valid YAML in the expected shape.
 3. No two game passes, developer products, or badges share a name (ignoring capitals).
+4. `thumbnails.game_page` has at most 10 images and `thumbnails.home_page` at most 5, and `alt_text` only appears on the game page.
 
 Exits `1` on failure, logs `Config file is valid.` on success.
 
@@ -151,12 +154,13 @@ The config is `rblxsync.yml` unless `--config` says otherwise.
 | Field | Type | Required | Default | What it is |
 | --- | --- | --- | --- | --- |
 | `universe` | object | **Yes** | | Which universe, plus its settings. |
-| `assets_dir` | string | No | `assets` | Folder holding the icon files your resources reference. |
+| `assets_dir` | string | No | `assets` | Folder holding the icon and thumbnail images your config references. |
 | `creator` | object | No | | Who owns uploaded icons. Only needed when uploading icons. |
 | `game_passes` | list | No | `[]` | Game passes to sync. |
 | `developer_products` | list | No | `[]` | Developer products to sync. |
 | `badges` | list | No | `[]` | Badges to sync. |
 | `places` | list | No | `[]` | Places available to `publish`. |
+| `thumbnails` | object | No | | Game page and home page thumbnails. |
 | `badge_payment_source` | string | No | | `"user"` or `"group"`. Needed to create badges. The wallet a badge past the free daily quota is paid from. |
 | `output_path` | string | No | | Where `run` writes the typed Luau module, e.g. `src/shared/Config.luau`. |
 
@@ -235,6 +239,31 @@ Roblox cannot list disabled badges. If a disabled badge already exists and your 
 | `file_path` | string | **Yes** | | Path to a `.rbxl` or `.rbxlx` file. |
 | `publish` | boolean | No | `false` | Only `true` places are touched by `rblxsync publish`. |
 
+### `thumbnails`
+
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `game_page` | list | No | The images at the top of your game's page, in the order you list them. Up to 10. |
+| `home_page` | list | No | The tiles players see on the Roblox home page. Up to 5. Two or more turn on thumbnail personalization, which shows each player the one they're most likely to click. |
+
+Each entry:
+
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `image` | string | **Yes** | Image file inside `assets_dir`: `.png`, `.jpg`, `.gif`, `.tga`, or `.bmp`. |
+| `alt_text` | string | No | `game_page` only. Synced when set. Left out, Roblox keeps whatever alt text it has. |
+
+How a run treats them:
+
+- An image is uploaded when its file is new or has changed, checked by SHA-256 against the lock file. Moving or renaming a file doesn't upload it again.
+- A thumbnail rblxsync uploaded is deleted once you remove its entry or change its file. Deleted one in the Creator Hub? The next run uploads it again.
+- Thumbnails rblxsync didn't upload are never deleted. On the game page they stay after yours, count toward the 10, and the run lists them in a warning.
+- `home_page` updates the personalization Roblox is running, which keeps its statistics, or starts one if none is running. Home page thumbnails it stops serving are only deleted if rblxsync uploaded them.
+- A missing or empty list leaves that set alone. Removing the whole list deletes nothing.
+- Roblox moderates every image. A rejected image, or a home page one flagged as spam, gets a warning on each run until you replace the file.
+
+Roblox recommends 16:9 images, ideally 1920×1080, and home page images under 3 MB.
+
 ### A full example
 
 ```yaml
@@ -278,6 +307,15 @@ places:
   - place_id: 1234567890
     file_path: "places/start_place.rbxl"
     publish: true
+
+thumbnails:
+  game_page:
+    - image: "thumbnails/lobby.png"
+      alt_text: "Players gathered in the lobby before a round"
+    - image: "thumbnails/arena.png"
+  home_page:
+    - image: "thumbnails/home_a.png"
+    - image: "thumbnails/home_b.png"
 ```
 
 ---
@@ -321,7 +359,7 @@ jobs:
           args: "--dry-run"
 ```
 
-Anything `run` writes back into `rblxsync.yml` or `rblxsync-lock.yml` on the runner is thrown away when the job finishes. Create new resources locally and commit the IDs, then let CI do the updates.
+Anything `run` writes back into `rblxsync.yml` or `rblxsync-lock.yml` on the runner is thrown away when the job finishes. Create new resources locally and commit the IDs, then let CI do the updates. Do the same with new or changed thumbnails: thumbnails have no name to match by, so a CI run that can't see them in the lock file uploads them again.
 
 ---
 
@@ -347,8 +385,11 @@ Generated state. **Don't hand-edit it**, your changes get overwritten. Commit it
 | `game_passes` | map of ID to resource | |
 | `developer_products` | map of ID to resource | |
 | `badges` | map of ID to resource | |
+| `thumbnails` | object, optional | `game_page` and `home_page` lists, one entry per thumbnail rblxsync uploaded. Left out until there is one. |
 
 The universe entry holds `name`, `description`, `genre`, `playable_devices`, `max_players`, and `private_server_cost` (as a string: `disabled`, `0`, or a number).
+
+Each thumbnail entry holds `image` (the path it was uploaded from), `id` (the media asset ID on the game page, the homepage thumbnail ID on the home page), and `hash` (SHA-256 of the file when it was uploaded).
 
 Each resource entry holds `name`, and optionally `description`, `price`, `is_for_sale` (game passes), `is_enabled` (badges), `icon_hash` (SHA-256 of the local icon, used to skip unchanged uploads), and `icon_asset_id` (the uploaded image asset ID; badges don't store this).
 
@@ -508,5 +549,7 @@ The API key needs these scopes:
 | Badges | read + create/manage | List via `badges.roblox.com/v1/universes/{uid}/badges` and the free quota via `.../free-badges-quota` (no auth); create, update, and icon through the legacy `legacy-badges` / `legacy-publish` endpoints |
 | Assets (icons) | upload | `POST /assets/v1/assets` (multipart), then polled at `GET /assets/v1/{operation}` |
 | Places | publish | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
+| Game page thumbnails | `legacy-universe:manage` | Upload, alt text, order, and delete through `legacy-game-internationalization/v1/game-thumbnails/games/{uid}/language-codes/{lang}/...`, where `{lang}` is the experience's source language. Read through `gameinternationalization.roblox.com/v1/source-language/games/{uid}` and `.../v1/game-thumbnails/games/{uid}/images` (no auth) |
+| Home page thumbnails | `universe.thumbnail:read` + `universe.thumbnail:write` | `thumbnail-personalization-api/v1/universes/{uid}/thumbnails` to list, upload (then polled at `.../thumbnails/uploads/status`), and delete; `.../personalization` to read, create, and update. Roblox marks this API experimental |
 
 A `429` (too many requests) is retried up to 3 times, waiting as long as the `Retry-After` header says.

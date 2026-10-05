@@ -4,8 +4,12 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::path::Path;
 use std::sync::RwLock;
 
+mod thumbnails;
+pub use thumbnails::{GamePageThumbnail, HomePageThumbnail, PersonalizedConfig};
+
 const BASE_URL: &str = "https://apis.roblox.com";
 const BADGES_BASE_URL: &str = "https://badges.roblox.com";
+const GAME_INTL_BASE_URL: &str = "https://gameinternationalization.roblox.com";
 
 /// Truncates a response body for logging to reduce sensitive data spill in CI logs.
 fn truncate_body(text: &str) -> String {
@@ -62,6 +66,7 @@ pub struct RobloxClient {
     api_key: String,
     base_url: String,
     badges_base_url: String,
+    game_intl_base_url: String,
 }
 
 impl RobloxClient {
@@ -71,6 +76,7 @@ impl RobloxClient {
             api_key,
             base_url: BASE_URL.to_string(),
             badges_base_url: BADGES_BASE_URL.to_string(),
+            game_intl_base_url: GAME_INTL_BASE_URL.to_string(),
         }
     }
 
@@ -81,7 +87,8 @@ impl RobloxClient {
             client: Client::new(),
             api_key,
             base_url: base_url.clone(),
-            badges_base_url: base_url,
+            badges_base_url: base_url.clone(),
+            game_intl_base_url: base_url,
         }
     }
 

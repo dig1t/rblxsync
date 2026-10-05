@@ -252,8 +252,23 @@ That write-back happens the moment the resource is created, not at the end. So e
 
 Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A new pass or product gets its icon in the same call that creates it.
 
+Thumbnails use the checksum too:
+
+```yaml
+thumbnails:
+  game_page:            # the top of your game's page, in this order
+    - image: "thumbnails/lobby.png"
+      alt_text: "Players gathered in the lobby before a round"
+    - image: "thumbnails/arena.png"
+  home_page:            # home page tiles; two or more turn on personalization
+    - image: "thumbnails/home_a.png"
+    - image: "thumbnails/home_b.png"
+```
+
+A new or changed image gets uploaded and the old upload deleted. The game page is put in the order you listed. The home page's running personalization gets updated in place, so it keeps its statistics.
+
 ## `rblxsync-lock.yml`
 
-rblxsync writes this file to remember what it did: which IDs it made, which icons it already uploaded.
+rblxsync writes this file to remember what it did: which IDs it made, which icons and thumbnails it already uploaded.
 
 **Commit it to git.** It's what keeps a run on your laptop and a run in CI from stepping on each other. Don't edit it by hand, it gets overwritten.

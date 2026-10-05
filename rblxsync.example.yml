@@ -38,7 +38,16 @@ places:
     file_path: "places/start_place.rbxl"
     publish: true # only places set to true get published
 
-assets_dir: assets/icons/ # where the icon files above live
+thumbnails:
+  game_page: # the top of your game's page, up to 10, in this order
+    - image: "thumbnails/lobby.png"
+      alt_text: "Players gathered in the lobby before a round"
+    - image: "thumbnails/arena.png"
+  home_page: # home page tiles, up to 5; two or more turn on personalization
+    - image: "thumbnails/home_a.png"
+    - image: "thumbnails/home_b.png"
+
+assets_dir: assets/icons/ # where the icon and thumbnail files above live
 
 # Who pays for a new badge once the game's 5 free a day are used: "user" or "group"
 # (paid badges also need `rblxsync run --allow-paid-badges`)

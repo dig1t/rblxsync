@@ -58,7 +58,7 @@ pub fn validate(config: &RblxSyncConfig) -> Result<()> {
     let badge_names: Vec<&str> = config.badges.iter().map(|b| b.name.as_str()).collect();
     check_for_duplicates(&badge_names, "badge")?;
 
-    Ok(())
+    crate::thumbnails::validate(&config.thumbnails)
 }
 
 /// Collect the lowercased `name` values from a list response, tolerating a
@@ -226,6 +226,8 @@ async fn preflight(
         }
     }
 
+    errors.extend(crate::thumbnails::missing_images(config));
+
     if !errors.is_empty() {
         let joined = errors
             .iter()
@@ -273,6 +275,7 @@ pub async fn run(
         allow_paid_badges,
     )
     .await?;
+    let thumbnail_plan = crate::thumbnails::plan(&config, &state, &client, dry_run).await?;
 
     // Update Universe Settings (requires cookie client)
     if config.universe.has_settings() {
@@ -314,6 +317,9 @@ pub async fn run(
         badge_budget,
     )
     .await?;
+    thumbnail_plan
+        .apply(&mut state, &client, lock_root(config_path))
+        .await?;
 
     // Save state next to the config (where it is also loaded from), so a
     // `--config sub/x.yml` keeps the lock file beside it. Atomic via state.save.
@@ -753,6 +759,12 @@ pub async fn import(
         developer_products,
         badges,
         places,
+        // Thumbnails aren't imported (there's no local file to point at), so
+        // the configured ones carry over as they are.
+        thumbnails: existing_config
+            .as_ref()
+            .map(|c| c.thumbnails.clone())
+            .unwrap_or_default(),
         badge_payment_source: existing_config
             .as_ref()
             .and_then(|c| c.badge_payment_source.clone()),
@@ -760,7 +772,10 @@ pub async fn import(
     };
 
     // --- Build merged state (rebuilt from scratch so stale entries drop) ---
-    let mut merged_state = SyncState::default();
+    let mut merged_state = SyncState {
+        thumbnails: existing_state.thumbnails.clone(),
+        ..Default::default()
+    };
     let existing_universe_state = existing_state.universe.as_ref();
     merged_state.universe = Some(UniverseState {
         name: remote_name,
@@ -2095,7 +2110,7 @@ fn new_pass_fields(pass: &GamePassConfig) -> String {
 }
 
 /// An icon file's bytes and file name, for a multipart upload.
-async fn read_icon(path: &Path) -> Result<(Vec<u8>, String)> {
+pub(crate) async fn read_icon(path: &Path) -> Result<(Vec<u8>, String)> {
     let data = tokio::fs::read(path)
         .await
         .with_context(|| format!("Failed to read icon {:?}", path))?;
@@ -2133,7 +2148,7 @@ fn check_for_duplicates(names: &[&str], resource_type: &str) -> Result<()> {
 }
 
 /// Calculate SHA-256 hash of a file
-async fn calculate_file_hash(path: &Path) -> Result<String> {
+pub(crate) async fn calculate_file_hash(path: &Path) -> Result<String> {
     if !path.exists() {
         return Err(anyhow!("File not found: {:?}", path));
     }
@@ -2295,6 +2310,7 @@ mod tests {
             developer_products: vec![],
             badges: vec![],
             places: vec![],
+            thumbnails: Default::default(),
             badge_payment_source: None,
             output_path: None,
         }

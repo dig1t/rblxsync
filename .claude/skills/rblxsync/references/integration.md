@@ -93,7 +93,8 @@ which writes `rblxsync.yml` and `rblxsync-lock.yml` directly. Use the
 
 Generated local state mapping live resource IDs to names, prices, flags, and icon
 SHA-256 hashes. Top-level keys: `universe`, `game_passes`, `developer_products`,
-`badges` (the last three are maps of resource-id → state).
+`badges` (maps of resource-id → state), and `thumbnails` (the `game_page` and
+`home_page` uploads rblxsync made: image path, id, and file hash).
 
 - **Commit it.** It's how syncs stay idempotent across machines/CI and how icon
   change-detection works (only re-uploads when the hash differs).
@@ -118,7 +119,7 @@ SHA-256 hashes. Top-level keys: `universe`, `game_passes`, `developer_products`,
 ## Recommended repo hygiene
 
 - Commit: `rblxsync.yml`, `rblxsync-lock.yml`, and the generated `Config.luau`
-  (if `output_path` is set), plus icon files under `assets_dir`.
+  (if `output_path` is set), plus icon and thumbnail files under `assets_dir`.
 - Gitignore: `.env` (always).
 - Keep `Config.luau` in version control so reviewers see ID changes in diffs and
   the game builds without a network sync.

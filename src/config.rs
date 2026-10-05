@@ -136,6 +136,8 @@ pub struct RblxSyncConfig {
     pub badges: Vec<BadgeConfig>,
     #[serde(default)]
     pub places: Vec<PlaceConfig>,
+    #[serde(default, skip_serializing_if = "ThumbnailsConfig::is_empty")]
+    pub thumbnails: ThumbnailsConfig,
     /// Payment source type for badge creation (costs 100 Robux per badge)
     /// Valid values: "user" (pay from user funds) or "group" (pay from group funds)
     pub badge_payment_source: Option<String>,
@@ -218,6 +220,32 @@ pub struct PlaceConfig {
     pub file_path: String,
     #[serde(default)]
     pub publish: bool,
+}
+
+/// Experience thumbnails. An empty list leaves that set alone on Roblox.
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
+pub struct ThumbnailsConfig {
+    /// The game page carousel, in display order (up to 10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub game_page: Vec<ThumbnailConfig>,
+    /// The home page tiles (up to 5). Two or more turn on personalization.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub home_page: Vec<ThumbnailConfig>,
+}
+
+impl ThumbnailsConfig {
+    pub fn is_empty(&self) -> bool {
+        self.game_page.is_empty() && self.home_page.is_empty()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ThumbnailConfig {
+    /// Image file, relative to `assets_dir`.
+    pub image: String,
+    /// Game page only; home page thumbnails have no alt text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_text: Option<String>,
 }
 
 impl RblxSyncConfig {

@@ -2,7 +2,7 @@
 # Only `universe.id` is required. Delete any section you don't need and start small.
 # Full schema: references/config-schema.md
 
-# Directory holding icon files referenced below (default: "assets").
+# Directory holding icon and thumbnail files referenced below (default: "assets").
 assets_dir: assets/icons/
 
 # Wallet a NEW badge is paid from once the game's 5 free badges a day are used: "user" or "group".
@@ -54,3 +54,13 @@ places:
   - place_id: 1234567890
     file_path: "places/start_place.rbxl"
     publish: true                   # only published by `rblxsync publish` when true
+
+# A missing or empty list leaves that set alone on Roblox.
+thumbnails:
+  game_page:                        # experience page carousel: up to 10, shown in this order
+    - image: "thumbnails/lobby.png" # relative to assets_dir; re-uploaded only when the file changes
+      alt_text: "Players gathered in the lobby before a round"   # synced when set
+    - image: "thumbnails/arena.png"
+  home_page:                        # home page tiles: up to 5; 2+ turn on personalization (no alt_text)
+    - image: "thumbnails/home_a.png"
+    - image: "thumbnails/home_b.png"

@@ -8,13 +8,14 @@ required.
 
 | Field | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `assets_dir` | string | No | `assets` | Directory holding icon files referenced by resources. |
+| `assets_dir` | string | No | `assets` | Directory holding icon and thumbnail files the config references. |
 | `creator` | object | No | – | Asset creation context. Required only when uploading icons. |
 | `universe` | object | **Yes** | – | Target universe + settings. |
 | `game_passes` | list | No | `[]` | Game passes to sync. |
 | `developer_products` | list | No | `[]` | Developer products to sync. |
 | `badges` | list | No | `[]` | Badges to sync (5 free a day per game, then 100 Robux each to create). |
 | `places` | list | No | `[]` | Places available to `rblxsync publish`. |
+| `thumbnails` | object | No | – | Game page and home page thumbnails. |
 | `badge_payment_source` | string | No | – | `"user"` or `"group"`. Needed to create badges: the wallet a badge past the free daily quota is paid from. |
 | `output_path` | string | No | – | Where `run` regenerates the typed `Config.luau` (e.g. `src/shared/Config.luau`). |
 
@@ -100,11 +101,34 @@ before syncing new badges, and before ever passing `--allow-paid-badges`.
 | `file_path` | string | **Yes** | – | Path to a `.rbxl` / `.rbxlx` file. |
 | `publish` | boolean | No | `false` | Only `publish: true` places are published by `rblxsync publish`. |
 
+## `thumbnails`
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `game_page` | list | No | Game page carousel, **in list order**. At most 10. |
+| `home_page` | list | No | Home page tiles. At most 5. Two or more turn on thumbnail personalization. |
+
+Each entry:
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `image` | string | **Yes** | File relative to `assets_dir` (`.png`, `.jpg`, `.gif`, `.tga`, `.bmp`). Re-uploaded only when its SHA-256 changes. |
+| `alt_text` | string | No | **`game_page` only** (a validation error on `home_page`). Synced when set; left out, Roblox's alt text is kept. |
+
+- A changed file or a removed entry deletes the upload rblxsync made for it.
+  Thumbnails rblxsync didn't upload are never deleted; on the game page they stay
+  after yours and **count toward the 10**, which `run` checks before changing
+  anything.
+- `home_page` updates the active personalization in place (statistics kept), or
+  creates one when none is running.
+- A missing or empty list leaves that set alone on Roblox.
+
 ## Validation (`rblxsync validate`)
 
 Runs with no API key and no network. It confirms the file exists, parses it, and
 **rejects case-insensitive duplicate names** within game passes, products, or
-badges. Always validate before a real sync.
+badges, more than 10 `game_page` or 5 `home_page` thumbnails, and `alt_text` on
+a `home_page` thumbnail. Always validate before a real sync.
 
 ## Duplicate-name pitfall
 

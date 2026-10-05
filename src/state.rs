@@ -18,6 +18,33 @@ pub struct SyncState {
     /// Badges keyed by their Roblox ID
     #[serde(default)]
     pub badges: HashMap<u64, ResourceState>,
+    /// Thumbnails rblxsync uploaded
+    #[serde(default, skip_serializing_if = "ThumbnailsState::is_empty")]
+    pub thumbnails: ThumbnailsState,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq)]
+pub struct ThumbnailsState {
+    /// Game page uploads, in config order; ids are media asset ids
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub game_page: Vec<ThumbnailState<u64>>,
+    /// Home page uploads, in config order; ids are homepage thumbnail ids
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub home_page: Vec<ThumbnailState<String>>,
+}
+
+impl ThumbnailsState {
+    pub fn is_empty(&self) -> bool {
+        self.game_page.is_empty() && self.home_page.is_empty()
+    }
+}
+
+/// One upload: the file it came from and the file's SHA-256 at upload time.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct ThumbnailState<Id> {
+    pub image: String,
+    pub id: Id,
+    pub hash: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq)]

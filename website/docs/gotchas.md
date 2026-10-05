@@ -35,6 +35,14 @@ They get saved to the lock file and your `Config.luau`, and that's it. Change th
 
 rblxsync reads it and ignores it. Game pass `is_for_sale` does work, and a new pass with a price goes on sale unless you set `is_for_sale: false`.
 
+## rblxsync only deletes thumbnails it uploaded
+
+Images already on your game page stay after yours, still count toward the 10, and every run lists them in a warning. Delete them in the Creator Hub if you don't want them. Leaving out the `thumbnails` section entirely leaves your thumbnails alone.
+
+## Home page thumbnails use an experimental API
+
+Roblox marks the thumbnail personalization API experimental. If Roblox changes it, `home_page` can break before the rest of rblxsync does.
+
 ## Run rblxsync from the folder that holds `rblxsync-lock.yml`
 
 The lock file is read from wherever your config lives but written to whatever folder you're standing in. Those being different will confuse it.

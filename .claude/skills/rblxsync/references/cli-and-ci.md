@@ -42,12 +42,16 @@ If no subcommand is given, it defaults to `run` (not dry-run).
 
 ### `run [--dry-run] [--allow-paid-badges]`
 
-Syncs universe settings + game passes, developer products, badges. Idempotent:
+Syncs universe settings + game passes, developer products, badges, thumbnails. Idempotent:
 an entry with an `id:` is matched by that id; without one, by name
 (case-insensitive); no match creates the resource and writes the new `id:` back
 into `rblxsync.yml` immediately. Icons re-upload only when their local SHA-256
 differs from the lock file; a new pass or product is created with its icon, and
 a new pass with a `price` is created on sale unless `is_for_sale: false`.
+Thumbnails upload only when an image is new or changed, and a changed or removed
+one has its old upload deleted. Thumbnails rblxsync didn't upload are left
+alone. The game page is ordered as listed, and `home_page` updates the running
+personalization in place.
 
 - `--dry-run`: previews changes, makes **no** mutating HTTP calls, does **not**
   write state, does **not** write `Config.luau`. Always run this first.
@@ -109,7 +113,8 @@ know about yet.
   ones, local-only entries are kept, stale lock entries are dropped.
 - An existing `rblxsync.yml` is backed up to `rblxsync.old.yml` first (then
   `rblxsync.old1.yml`, `.old2.yml`, ...).
-- Icons are not imported.
+- Icons and thumbnails are not imported. An existing `thumbnails` section and
+  its lock entries carry over unchanged.
 
 ## Environment variables
 
@@ -148,6 +153,8 @@ against `develop.roblox.com`. The API key needs these scopes:
 | Badges | read + create/manage | list and free quota via `badges.roblox.com`; create/update/icon via legacy `legacy-badges` / `legacy-publish` |
 | Assets (icons) | upload | `POST /assets/v1/assets` (multipart), polled at `GET /assets/v1/{operation}` |
 | Places | publish | `POST /v1/universes/{uid}/places/{placeId}/versions?versionType=Published` |
+| Game page thumbnails | `legacy-universe:manage` | `legacy-game-internationalization/v1/game-thumbnails/games/{uid}/language-codes/{lang}/...` (upload, alt text, order, delete); listed via `gameinternationalization.roblox.com` (no auth) |
+| Home page thumbnails | `universe.thumbnail:read` + `universe.thumbnail:write` | `thumbnail-personalization-api/v1/universes/{uid}/thumbnails` and `.../personalization` (experimental) |
 
 `429` responses are retried up to 3 times honoring `Retry-After`.
 
@@ -176,6 +183,12 @@ builds `--release`, then runs
 > **Pin to a published ref.** Published tags: `v0.1.0`, `v0.1.1`, `v0.2.2`, `v0.2.3`
 > (latest). A moving `@v1` major tag is **not** published. Do not reference
 > `@v1` until it exists. `@main` works but is unpinned.
+
+> **Write-backs stay on the runner.** New ids and thumbnail uploads land in
+> `rblxsync.yml` / `rblxsync-lock.yml` on the runner and vanish when the job
+> ends. Create new resources and sync new or changed thumbnails locally, commit
+> both files, then let CI do the updates. Thumbnails have no name to match by,
+> so a CI-only setup uploads them again on every run.
 
 Store `ROBLOX_API_KEY` (and `ROBLOX_COOKIE` if needed) under
 **Settings → Secrets and variables → Actions**. See

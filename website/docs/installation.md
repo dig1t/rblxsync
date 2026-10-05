@@ -61,7 +61,7 @@ An API key is a password that lets rblxsync talk to Roblox for you.
 
 1. Go to [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials)
 2. Click **Create API Key**
-3. Give it access to your experience, and turn on read + write for **Game Passes**, **Developer Products**, **Badges**, **Assets**, and **Places**
+3. Give it access to your experience, and turn on read + write for **Game Passes**, **Developer Products**, **Badges**, **Assets**, and **Places**. Syncing thumbnails also needs `legacy-universe:manage` (game page) and `universe.thumbnail:read` + `universe.thumbnail:write` (home page)
 4. Under IP access, put `0.0.0.0/0` if you're not sure what your IP is
 5. Save it and copy the key
 

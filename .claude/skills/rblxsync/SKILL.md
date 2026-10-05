@@ -2,10 +2,11 @@
 name: rblxsync
 description: >-
   Declaratively manage Roblox experience metadata (Universe settings, Game
-  Passes, Developer Products, Badges, Places) from a YAML file via the rblxsync
-  CLI / GitHub Action. Use when setting up rblxsync in a Roblox project, writing
-  or editing rblxsync.yml, syncing/publishing game passes, developer products,
-  badges, places or universe settings, wiring the generated Config.luau into
+  Passes, Developer Products, Badges, Thumbnails, Places) from a YAML file via
+  the rblxsync CLI / GitHub Action. Use when setting up rblxsync in a Roblox
+  project, writing or editing rblxsync.yml, syncing/publishing game passes,
+  developer products, badges, game page or home page thumbnails (thumbnail
+  personalization), places or universe settings, wiring the generated Config.luau into
   Luau game code, debugging ROBLOX_API_KEY / ROBLOX_COOKIE errors, or adding
   rblxsync to CI, or when adopting rblxsync on a game that already has live
   monetization. Triggers on "rblxsync", "rblxsync.yml", "sync game passes",
@@ -18,7 +19,7 @@ description: >-
 `rblxsync` is a Rust CLI + GitHub Action that **declaratively** manages Roblox
 experience metadata via the Open Cloud API. One YAML file (`rblxsync.yml`) is the
 source of truth for Universe settings, Game Passes, Developer Products, Badges,
-and Places. Running it is idempotent: resources are matched by **id** when the
+Thumbnails, and Places. Running it is idempotent: resources are matched by **id** when the
 config entry has one, otherwise by **name** (case-insensitive), created if
 missing, updated (PATCH) if present.
 
@@ -28,7 +29,8 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
 ## Mental model (read this first)
 
 - **`rblxsync.yml`** = desired state, hand-edited, committed.
-- **`rblxsync-lock.yml`** = generated state (resource IDs + icon hashes).
+- **`rblxsync-lock.yml`** = generated state (resource IDs, icon hashes, and
+  the thumbnails rblxsync uploaded).
   **Commit it.** Never hand-edit it: it is overwritten on the next sync.
 - **`Config.luau`** (only if `output_path` is set) = generated, typed Luau module
   of all resource IDs. Game code `require`s it. Never hand-edit it.
@@ -140,10 +142,10 @@ For the full field-by-field schema, defaults, and every gotcha, read
 
 | Command | What it does |
 | --- | --- |
-| `rblxsync run [--dry-run] [--allow-paid-badges]` | Sync universe settings + game passes, products, badges. Default command. Writes `rblxsync-lock.yml` and (if set) `Config.luau`. `--allow-paid-badges` lets badges past the day's free quota cost 100 Robux each. |
+| `rblxsync run [--dry-run] [--allow-paid-badges]` | Sync universe settings + game passes, products, badges, thumbnails. Default command. Writes `rblxsync-lock.yml` and (if set) `Config.luau`. `--allow-paid-badges` lets badges past the day's free quota cost 100 Robux each. |
 | `rblxsync publish` | Publish `.rbxl` places where `publish: true`. Always publishes (no "save"). Does NOT need the cookie. |
 | `rblxsync validate` | Parse + check the YAML (dup names, etc.). No API key, no network. |
-| `rblxsync import [--universe-id ID] [--place-id ID]... [--badge-id ID]...` | Pull a live experience into `rblxsync.yml` AND `rblxsync-lock.yml`, ids included. Use this to adopt rblxsync on an existing game. Remote wins on conflicts; the old config is backed up to `rblxsync.old.yml` first. Icons are not imported. |
+| `rblxsync import [--universe-id ID] [--place-id ID]... [--badge-id ID]...` | Pull a live experience into `rblxsync.yml` AND `rblxsync-lock.yml`, ids included. Use this to adopt rblxsync on an existing game. Remote wins on conflicts; the old config is backed up to `rblxsync.old.yml` first. Icons and thumbnails are not imported (a `thumbnails` section carries over as is). |
 | `rblxsync export [-o PATH] [--lua]` | One-way snapshot of live resources to a flat Luau/Lua table. Read-only. NOT a config you can feed back in (use `import` for that), and NOT the same shape as `Config.luau`. |
 
 Full command reference, flags, the GitHub Action, environment variables, and
@@ -171,6 +173,26 @@ safely.
 - **Game Pass `is_for_sale`**: this one *is* synced. Left out, a new pass with a
   `price` is created on sale.
 
+## Thumbnails
+
+`thumbnails.game_page` (up to 10, shown in list order, optional `alt_text`) and
+`thumbnails.home_page` (up to 5; 2+ turn on Roblox's thumbnail personalization)
+list image files in `assets_dir`.
+
+- An image uploads only when its file is new or changed (SHA-256 vs the lock
+  file). Renaming or moving a file doesn't re-upload it.
+- rblxsync deletes a thumbnail it uploaded once its entry is removed or its file
+  changes. It never deletes thumbnails it didn't upload: on the game page they
+  stay after the configured ones, count toward the 10, and every run warns about
+  them. Tell the user, don't delete them for them.
+- `home_page` updates the running personalization in place (keeps its
+  statistics) or starts one. That API is experimental on Roblox's side.
+- A missing or empty list leaves that set alone; removing it deletes nothing.
+- Permissions: `legacy-universe:manage` for the game page,
+  `universe.thumbnail:read` + `universe.thumbnail:write` for the home page.
+- Show the user the `--dry-run` lines (`[UPLOAD]`, `[DELETE]`, `[ORDER]`,
+  `[UPDATE]`) before a real run that deletes thumbnails.
+
 Do not type game code against a Developer Product `IsActive` field. The generated
 `DeveloperProduct` type has no such field (`{ Id, Name, Description, Price }`).
 
@@ -195,8 +217,9 @@ A ready-to-use workflow template is in `assets/github-workflow-sync.yml`. Copy i
 to `.github/workflows/`, set repo secrets (`ROBLOX_API_KEY`, optionally
 `ROBLOX_COOKIE`), and pin the action to a published tag (`@v0.2.3`; there is no
 moving `@v1`). The CI gotchas (the `args` input word-splits and cannot contain
-spaces; ids written back during a CI run live only on the runner, so create new
-resources locally and commit them) are in `references/cli-and-ci.md`.
+spaces; ids and thumbnail uploads written back during a CI run live only on the
+runner, so create new resources and sync new or changed thumbnails locally and
+commit both files) are in `references/cli-and-ci.md`.
 
 ## When unsure
 

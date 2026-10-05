@@ -90,6 +90,6 @@ jobs:
           command: run
 ```
 
-One thing to remember: when the action creates something new, it writes IDs into `rblxsync.yml` and `rblxsync-lock.yml` on the runner, and those changes vanish when the job ends. Run `rblxsync run` on your own machine first and commit the result, so CI has the IDs already.
+One thing to remember: when the action creates something new, it writes IDs into `rblxsync.yml` and `rblxsync-lock.yml` on the runner, and those changes vanish when the job ends. Run `rblxsync run` on your own machine first and commit the result, so CI has the IDs already. The same goes for new or changed thumbnails: they have no name to match by, so CI uploads them again on every run until the lock file it starts from has them.
 
 Full input list: [API reference](/api#github-action).

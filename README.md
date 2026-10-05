@@ -1,6 +1,6 @@
 # rblxsync
 
-Your game passes, developer products, and badges live in a text file. You run one command. Roblox updates to match.
+Your game passes, developer products, badges, and thumbnails live in a text file. You run one command. Roblox updates to match.
 
 No more clicking through the Creator Hub every time you change a price. No more copying IDs into your code by hand.
 
@@ -41,6 +41,7 @@ products, a test place, and other people touching the game.
 | Set up a test universe | Recreate every pass, product, and badge by hand, then juggle two sets of IDs in your code | Copy the file, change `universe.id`, `rblxsync run --config dev.yml` |
 | Find out who dropped the VIP price last week | There's no history. Go ask people. | `git log -p rblxsync.yml` |
 | Undo a bad edit | Remember what the description used to say, retype it, hope | `git revert`, run again |
+| Swap the game page thumbnails for an update | Upload each image, drag them into order, retype the alt text, delete the old ones | Replace the files, run it |
 | Add 12 badges for an event | 12 forms. Past the 5 free each day, every one costs 100 Robux, and a typo means a badge you can't take back | 12 entries, checked with `--dry-run`. It makes the free ones and stops before spending a single Robux |
 | Show a new teammate how monetization works | Hand over a login and hope | They read one file |
 
@@ -92,7 +93,7 @@ An API key is a password that lets rblxsync talk to Roblox for you.
 
 1. Go to [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials)
 2. Click **Create API Key**
-3. Give it access to your experience, and turn on read + write for **Game Passes**, **Developer Products**, **Badges**, **Assets**, and **Places**
+3. Give it access to your experience, and turn on read + write for **Game Passes**, **Developer Products**, **Badges**, **Assets**, and **Places**. Syncing thumbnails also needs `legacy-universe:manage` (game page) and `universe.thumbnail:read` + `universe.thumbnail:write` (home page)
 4. Under IP access, put `0.0.0.0/0` if you're not sure what your IP is
 5. Save it and copy the key
 
@@ -338,7 +339,8 @@ Only `universe.id` is required. Everything else is optional.
 | `developer_products` | One entry per developer product. `price` is required here. |
 | `badges` | One entry per badge. New badges are free up to 5 a day, then cost **100 Robux** each. |
 | `places` | Place files for `rblxsync publish`. |
-| `assets_dir` | Folder your icon images live in. Defaults to `assets`. |
+| `thumbnails` | Images for your game page (up to 10, in order, with alt text) and the home page (up to 5). |
+| `assets_dir` | Folder your icon and thumbnail images live in. Defaults to `assets`. |
 | `creator` | Who owns uploaded icons. Only needed if you use icons. |
 | `badge_payment_source` | `"user"` or `"group"`. Needed to create badges. The wallet a paid badge comes out of. |
 | `output_path` | Where to write the Luau file with all your IDs. |
@@ -356,6 +358,21 @@ For each pass, product, or badge:
 That write-back happens the moment the resource is created, not at the end. So even if the next step crashes, the ID is safe and the next run picks up where you left off instead of making a duplicate.
 
 Icons work the same way, using a checksum. rblxsync only re-uploads an icon when the file on your disk actually changed. A new pass or product gets its icon in the same call that creates it.
+
+Thumbnails use the checksum too:
+
+```yaml
+thumbnails:
+  game_page:            # the top of your game's page, in this order
+    - image: "thumbnails/lobby.png"
+      alt_text: "Players gathered in the lobby before a round"
+    - image: "thumbnails/arena.png"
+  home_page:            # home page tiles; two or more turn on personalization
+    - image: "thumbnails/home_a.png"
+    - image: "thumbnails/home_b.png"
+```
+
+A new or changed image gets uploaded and the old upload deleted. The game page is put in the order you listed. The home page's running personalization gets updated in place, so it keeps its statistics.
 
 ## Things that will trip you up
 
@@ -375,11 +392,15 @@ To get it: log into roblox.com, press F12, go to Application → Cookies, and co
 
 **`is_active` on developer products does nothing.** rblxsync reads it and ignores it. Game pass `is_for_sale` does work, and a new pass with a price goes on sale unless you set `is_for_sale: false`.
 
+**rblxsync only deletes thumbnails it uploaded.** Images already on your game page stay after yours, still count toward the 10, and every run lists them in a warning. Delete them in the Creator Hub if you don't want them. Leaving out the `thumbnails` section entirely leaves your thumbnails alone.
+
+**Home page thumbnails use an API Roblox calls experimental.** If Roblox changes it, `home_page` can break before the rest of rblxsync does.
+
 **Run rblxsync from the folder that holds `rblxsync-lock.yml`.** The lock file is read from wherever your config lives but written to whatever folder you're standing in. Those being different will confuse it.
 
 ## `rblxsync-lock.yml`
 
-rblxsync writes this file to remember what it did: which IDs it made, which icons it already uploaded.
+rblxsync writes this file to remember what it did: which IDs it made, which icons and thumbnails it already uploaded.
 
 **Commit it to git.** It's what keeps a run on your laptop and a run in CI from stepping on each other. Don't edit it by hand, it gets overwritten.
 
@@ -410,6 +431,8 @@ jobs:
 Put your key in the repo under **Settings → Secrets and variables → Actions**, named `ROBLOX_API_KEY`. Add `ROBLOX_COOKIE` too if you're changing universe settings.
 
 Pin the version like `@v0.2.3`. There's no `@v1` tag yet, so don't use one.
+
+Whatever the action writes into `rblxsync.yml` and `rblxsync-lock.yml` stays on the runner and is gone when the job ends. Create new passes, products, and badges, and sync new or changed thumbnails, on your own machine, then commit both files. Thumbnails have no name to match by, so CI uploads them again on every run until the committed lock file has them.
 
 | Input | Required | Default | What it is |
 |-------|----------|---------|------------|

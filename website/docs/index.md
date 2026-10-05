@@ -6,7 +6,7 @@ title: Introduction
 
 # rblxsync
 
-Your game passes, developer products, and badges live in a text file. You run one command. Roblox updates to match.
+Your game passes, developer products, badges, and thumbnails live in a text file. You run one command. Roblox updates to match.
 
 No more clicking through the Creator Hub every time you change a price. No more copying IDs into your code by hand.
 
@@ -37,6 +37,7 @@ Run it again tomorrow and nothing breaks. It never makes a second copy of the sa
 
 - Create and update game passes, developer products, and badges from one file
 - Upload icons, and skip the upload when the image hasn't changed
+- Keep your game page and home page thumbnails in order, with alt text, swapping only the images that changed
 - Publish `.rbxl` place files
 - Write every ID into a typed Luau module your game code can `require`
 - Pull an existing game's setup down into a config, so you don't have to retype it
