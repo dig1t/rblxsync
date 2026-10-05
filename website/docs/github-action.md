@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync Roblox metadata
-        uses: dig1t/rblxsync@v0.2.3
+        uses: dig1t/rblxsync@v0.3.0
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run
@@ -39,7 +39,7 @@ Open your repo, then **Settings → Secrets and variables → Actions → New re
 
 ## Pin the version
 
-Use a tag that exists, like `@v0.2.3`. There's no `@v1` tag yet, so don't reference one.
+Use a tag that exists, like `@v0.3.0`. There's no `@v1` tag yet, so don't reference one.
 
 ## Inputs
 
@@ -70,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dig1t/rblxsync@v0.2.3
+      - uses: dig1t/rblxsync@v0.3.0
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run
@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dig1t/rblxsync@v0.2.3
+      - uses: dig1t/rblxsync@v0.3.0
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run

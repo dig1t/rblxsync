@@ -6,11 +6,11 @@ The binary is `rblxsync`.
 
 ```bash
 # Recommended: tool-manager pin (Rokit / Aftman)
-rokit add dig1t/rblxsync@0.2.3
+rokit add dig1t/rblxsync@0.3.0
 
 #   rokit.toml / aftman.toml
 #   [tools]
-#   rblxsync = "dig1t/rblxsync@0.2.3"
+#   rblxsync = "dig1t/rblxsync@0.3.0"
 
 # Second choice: download a zip from the GitHub Releases page.
 # Fallback: build from source
@@ -22,7 +22,7 @@ cargo install --path .
 > (Intel Mac), `-aarch64-apple-darwin.zip` (Apple Silicon), and
 > `-x86_64-pc-windows-msvc.zip`. Each zip holds a bare `rblxsync` executable
 > (`rblxsync.exe` on Windows), named so Aftman/Rokit resolve it. Verify the
-> install with `rblxsync --version` (prints `rblxsync 0.2.3`).
+> install with `rblxsync --version` (prints `rblxsync 0.3.0`).
 
 ## CLI
 
@@ -169,7 +169,7 @@ instead of Open Cloud.
 ## GitHub Action
 
 Composite action: checks out rblxsync at the ref you pinned
-(`ref: ${{ github.action_ref }}`, so `uses: dig1t/rblxsync@v0.2.3` builds
+(`ref: ${{ github.action_ref }}`, so `uses: dig1t/rblxsync@v0.3.0` builds
 exactly that tag) into `.rblxsync-action`, sets up stable Rust, caches cargo,
 builds `--release`, then runs
 `rblxsync "$COMMAND" --config "$CONFIG" $ARGS`.
@@ -187,7 +187,7 @@ builds `--release`, then runs
 > `--dry-run --foo` split correctly, but **any single argument containing a space
 > is broken apart**; there is no quoting mechanism. Use only space-free flags.
 
-> **Pin to a published ref.** Published tags: `v0.1.0`, `v0.1.1`, `v0.2.2`, `v0.2.3`
+> **Pin to a published ref.** Published tags: `v0.1.0`, `v0.1.1`, `v0.2.2`, `v0.2.3`, `v0.3.0`
 > (latest). A moving `@v1` major tag is **not** published. Do not reference
 > `@v1` until it exists. `@main` works but is unpinned.
 

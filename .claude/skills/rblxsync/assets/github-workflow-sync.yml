@@ -3,7 +3,7 @@
 # Prerequisites (repo Settings -> Secrets and variables -> Actions):
 #   - ROBLOX_API_KEY  (required)
 #
-# Pin the action to a published ref. v0.2.3 is the latest tag; a moving @v1 tag
+# Pin the action to a published ref. v0.3.0 is the latest tag; a moving @v1 tag
 # does NOT exist yet. Do not use @v1 until it's published. @main works but is
 # unpinned.
 
@@ -29,14 +29,14 @@ jobs:
       # The `args` input is appended UNQUOTED and word-splits; use only
       # space-free flags. One arg containing a space will be broken apart.
       - name: Preview changes (dry run)
-        uses: dig1t/rblxsync@v0.2.3
+        uses: dig1t/rblxsync@v0.3.0
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run
           args: --dry-run
 
       - name: Sync Roblox metadata
-        uses: dig1t/rblxsync@v0.2.3
+        uses: dig1t/rblxsync@v0.3.0
         with:
           api_key: ${{ secrets.ROBLOX_API_KEY }}
           command: run

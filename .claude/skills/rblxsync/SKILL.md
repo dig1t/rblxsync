@@ -97,7 +97,7 @@ config, run syncs safely, and wire the generated `Config.luau` into game code.
 Run these steps when adding rblxsync to a codebase that doesn't have it yet.
 
 1. **Confirm install.** `rblxsync --version` prints the version (e.g.
-   `rblxsync 0.2.3`). If it is absent, install it: `rokit add dig1t/rblxsync@0.2.3`
+   `rblxsync 0.3.0`). If it is absent, install it: `rokit add dig1t/rblxsync@0.3.0`
    (Aftman and Foreman take the same pin), or grab the zip for the machine from
    the Releases page, or `cargo install --path .` from source. Every release ships
    binaries for Linux, Windows, Intel Mac, and Apple Silicon. See
@@ -223,7 +223,7 @@ user's existing Luau to consume rblxsync output.
 ## Adding to CI
 
 A ready-to-use workflow template is in `assets/github-workflow-sync.yml`. Copy it
-to `.github/workflows/`, set repo secrets (`ROBLOX_API_KEY`), and pin the action to a published tag (`@v0.2.3`; there is no
+to `.github/workflows/`, set repo secrets (`ROBLOX_API_KEY`), and pin the action to a published tag (`@v0.3.0`; there is no
 moving `@v1`). The CI gotchas (the `args` input word-splits and cannot contain
 spaces; ids and thumbnail uploads written back during a CI run live only on the
 runner, so create new resources and sync new or changed thumbnails locally and
